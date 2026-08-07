@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# WorkBuddy 工作区记忆（本机私有，不入库）
+.workbuddy/
+
+# 本机维护工具（Allan 决定不入库）
+scripts/sync_skill.bat
+
+# 内部开发上下文（含本机环境路径，公开版见 README 核心验证逻辑章节）
+DEVELOPMENT_CONTEXT.md

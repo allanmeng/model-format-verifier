@@ -1,0 +1,969 @@
+"""
+模型结构验证脚本 — 通用量化格式检测（不绑定任何特定插件）
+
+用法:
+    F:/ComfyUI-aki-v3/python/python.exe check_model.py <模型路径> [更多路径...]
+    F:/ComfyUI-aki-v3/python/python.exe check_model.py <目录>     # 批量扫描目录下所有 .safetensors
+
+输出说明:
+    1. 文件大小 + fp16 参考大小 → 判断压缩比
+    2. key 后缀统计 → 看有哪些量化伴生张量
+    3. 权重 dtype → 判断是 int8 / int4 打包 / 未量化
+    4. scale 维度 → 判断是 tensorwise / per-row / group-wise
+    5. 综合判定 → 格式类型 + 关键结构参数（只对模型下结论）
+
+设计原则:
+    - 通用性: 只检测模型本身, 不输出任何特定插件(如 wa4 loader)的可用性判断
+    - 证据链闭合: 结论必须由「主导格式」(采样层中出现最多的结构) + 决定性验证推导
+    - 插件即探针: 特定插件的实现细节可用于反向发现通用检测逻辑的漏洞(如伪 W4A4 死分支),
+      但修复后的判定逻辑保持插件无关
+    - 文件名/元数据/直方图都不可信, 只有解包验证是硬证据
+
+判定优先级（从高到低）:
+    1. bitsandbytes__nf4 标记    → NF4 (bnb 量化, absmax+quant_map 码本)
+    2. comfy_quant 元数据        → ComfyUI 官方量化格式 (按 format 细分)
+    3. weight_zp + int32 打包    → 非对称 INT4
+    4. 2D scale + 解包验证通过   → Packed INT4 (group-wise, nunchaku 风格)
+    5. 1D scale + 解包验证通过   → Packed INT4 (per-row, 无 group_size)
+    6. 全宽 int8 + gs 虚标       → 伪 W4A4 / Group-wise INT8 (命名虚标)
+    7. 纯 int8 无打包            → INT8 / INT8+BF16 混合
+    8. 压缩比 >=75% 无量化结构   → 接近未量化 (FP16/BF16/FP8)
+    9. 兜底                      → 格式不明确
+"""
+import sys, os, json, struct
+import warnings
+
+# 吞掉环境噪声 (如 torch.cuda 导入时的 pynvml FutureWarning), 保持控制台极简
+# 必须在 import torch 之前生效, 否则导入期警告仍会打印
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+import torch
+import safetensors.torch as st
+from collections import Counter
+
+__version__ = "1.0.1"
+
+BANNER = "=" * 80
+SECTION = "-" * 80
+
+COMMON_GROUP_SIZES = {16, 32, 64, 128, 256, 512}
+
+
+def print_file_head(fsize, path):
+    """文件头部横幅 + 基本信息"""
+    print()
+    print(BANNER)
+    print(f" 📦 MFV 模型检查工具 v{__version__}")
+    print(BANNER)
+    print(f" 文件: {os.path.basename(path)}")
+    print(f" 大小: {fsize:.2f} GB")
+    print(f" 路径: {os.path.dirname(path) or os.getcwd()}")
+
+
+def print_sec_quick(type_str, load_advice, fsize, ratio=None):
+    """💡 普通用户速览区"""
+    print()
+    print(SECTION)
+    print(" 💡 【普通用户速览】")
+    print(SECTION)
+    print(f"  • 模型类型: {type_str}")
+    if load_advice:
+        print(f"  • 典型加载: {load_advice}")
+    if ratio is not None:
+        print(f"  • 显存参考: 磁盘 {fsize:.2f} GB (估算; 相比全 FP16 约省 {100 - ratio:.0f}%)")
+    else:
+        print(f"  • 显存参考: 磁盘 {fsize:.2f} GB (估算, 推理占用视引擎而定)")
+
+
+def print_sec_perf(fp16_gb, final_ratio, protocol, algo, save_note):
+    """📊 性能与结构评估区 (介于速览与深度诊断之间)"""
+    print()
+    print(SECTION)
+    print(" 📊 【性能与结构评估】")
+    print(SECTION)
+    print(f"  • 原始等效: ~{fp16_gb:.2f} GB (FP16 基础)")
+    if final_ratio is not None:
+        save_pct = 100 - final_ratio
+        if save_pct > 0.5:  # 阈值防浮点噪声 (-0% / 0.01%)
+            print(f"  • 显存节省: 约 {save_pct:.0f}% ⏬ ({save_note})")
+        else:
+            print(f"  • 显存节省: 约 0% ({save_note})")
+    print(f"  • 量化协议: {protocol}")
+    if algo:
+        print(f"  • 关键算法: {algo}")
+
+
+def print_sec_diag():
+    """🔍 开发者深度诊断区标题"""
+    print()
+    print(SECTION)
+    print(" 🔍 【开发者深度诊断】")
+    print(SECTION)
+
+
+def print_sec_final():
+    """终审结论区标题"""
+    print()
+    print(BANNER)
+    print(" 【终审结论】")
+    print(BANNER)
+
+# GGML 张量类型枚举 (llama.cpp ggml.h) → 名称
+GGML_TYPE_NAMES = {
+    0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 4: "Q4_2", 5: "Q4_3",
+    6: "Q5_0", 7: "Q5_1", 8: "Q8_0", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K",
+    12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS",
+    18: "IQ3_XXS", 19: "IQ1_S", 20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S",
+    23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64",
+    29: "IQ1_M", 30: "BF16",
+}
+# 每元素近似位宽 (分块量化含块内 scale 开销, 校准自 llama.cpp block_size/type_size; IQ 系为标称值)
+GGML_TYPE_BITS = {
+    0: 32, 1: 16, 2: 4.5, 3: 5.5, 4: 4.5, 5: 5.5, 6: 5.5, 7: 6.5,
+    8: 8.5, 9: 9.5, 10: 4.1, 11: 4.0, 12: 4.5, 13: 6.0, 14: 6.5, 15: 8.5,
+    16: 3.0, 17: 3.0, 18: 3.25, 19: 1.75, 20: 4.25, 21: 3.5, 22: 2.75,
+    23: 4.5, 24: 8, 25: 16, 26: 32, 27: 64, 28: 64, 29: 1.9, 30: 16,
+}
+
+
+def _gguf_read_string(f):
+    """GGUF 字符串: uint64 长度 + UTF-8 字节"""
+    n = struct.unpack("<Q", f.read(8))[0]
+    return f.read(n).decode("utf-8", errors="replace")
+
+
+def _gguf_read_value(f, vtype):
+    """GGUF KV 值读取 (类型 0-12), ARRAY 递归"""
+    if vtype == 0:   return struct.unpack("<B", f.read(1))[0]
+    if vtype == 1:   return struct.unpack("<b", f.read(1))[0]
+    if vtype == 2:   return struct.unpack("<H", f.read(2))[0]
+    if vtype == 3:   return struct.unpack("<h", f.read(2))[0]
+    if vtype == 4:   return struct.unpack("<I", f.read(4))[0]
+    if vtype == 5:   return struct.unpack("<i", f.read(4))[0]
+    if vtype == 6:   return struct.unpack("<f", f.read(4))[0]
+    if vtype == 7:   return bool(struct.unpack("<B", f.read(1))[0])
+    if vtype == 8:   return _gguf_read_string(f)
+    if vtype == 9:   # ARRAY
+        elem_type = struct.unpack("<I", f.read(4))[0]
+        cnt = struct.unpack("<Q", f.read(8))[0]
+        return [_gguf_read_value(f, elem_type) for _ in range(cnt)]
+    if vtype == 10:  return struct.unpack("<Q", f.read(8))[0]
+    if vtype == 11:  return struct.unpack("<q", f.read(8))[0]
+    if vtype == 12:  return struct.unpack("<d", f.read(8))[0]
+    raise ValueError(f"未知 GGUF KV 类型 {vtype}")
+
+
+def verify_unpack4(w, sample=1_000_000):
+    """解码验证: 判断 int8/uint8 权重是否为 4bit 字节打包。
+
+    关键: 任何字节拆成两个 nibble 都天然 ∈[-8,7] 且 ≤16 值 — 单看解包值域无区分力!
+    必须检查「字节 unique 数量」和「nibble 缺失模式」:
+    - 全宽 int8 量化权重: 字节 unique 接近 256 (如 255), lo/hi nibble 全覆盖 16
+    - 真 4bit 打包: 每字节存两个 4bit 量化值, nibble 值域受限,
+      字节 unique = lo_unique × hi_unique (如 15×15=225), 出现 nibble 缺失
+    返回 (is_packed, byte_unique, lo_unique, hi_unique)
+    """
+    if not isinstance(w, torch.Tensor) or w.dtype not in (torch.int8, torch.uint8):
+        return None, 0, 0, 0
+    flat = w.flatten()[:sample].to(torch.int16)
+    byte_u = torch.unique(flat).numel()
+    lo_u = torch.unique(flat & 0x0F).numel()
+    hi_u = torch.unique((flat >> 4) & 0x0F).numel()
+    # 打包特征: nibble 有缺失 (unique < 16) 且字节组合约等于 lo×hi
+    nibble_missing = (lo_u < 16) or (hi_u < 16)
+    combo_exact = byte_u <= lo_u * hi_u and byte_u >= lo_u * hi_u * 0.8
+    if nibble_missing and combo_exact:
+        return True, byte_u, lo_u, hi_u
+    return False, byte_u, lo_u, hi_u
+
+
+def infer_group_size(weight_w, scale, gs_meta=None, ratio=None, numeric_packed=None,
+                     unpack_ok=None):
+    """推断 group-wise 量化布局: 返回 (verdict, detail)。
+
+    - weight_w: weight 第二维 (K)
+    - scale: 2D scale 张量
+    - gs_meta: w4a4_group_size 元数据值 (可能虚标)
+    - ratio: 无偏压缩比 % (参考, 不参与打包裁决)
+    - numeric_packed: 数值检测 (仅供参考, 不再作决定性判据)
+    - unpack_ok: 4bit 解包验证结果 (True/False/None, 决定性证据之一)
+    """
+    if scale.ndim != 2:
+        return "未知", f"scale 非 2D: {tuple(scale.shape)}"
+    G = scale.shape[0]
+
+    # 反推两种可能的 group_size
+    gs_full = weight_w / G          # 假设全宽
+    gs_packed = 2 * weight_w / G    # 假设半宽打包 (K_full = 2*K_w)
+    full_ok = abs(gs_full - round(gs_full)) < 1e-6 and round(gs_full) in COMMON_GROUP_SIZES
+    pack_ok = abs(gs_packed - round(gs_packed)) < 1e-6 and round(gs_packed) in COMMON_GROUP_SIZES
+
+    def _packed_verdict(tag, gs_val):
+        """判定是否真打包: 形状自洽 + 4bit 解包验证 双证据闭合"""
+        if unpack_ok is False:
+            return f"Group-wise INT8 全宽 (伪 W4A4, {tag})", \
+                   f"gs={gs_val}, 解包验证=全宽 int8 → 伪 W4A4"
+        if unpack_ok is True:
+            return "Packed INT4 半宽", f"gs={gs_val}, 解包验证=合法4bit"
+        return "Packed INT4 半宽 (需确认)", \
+               f"gs={gs_val}, 形状自洽但解包验证缺失"
+
+    if gs_meta is not None:
+        meta = int(gs_meta)
+        consistent_full = (G * meta == weight_w)
+        consistent_pack = (G * meta == 2 * weight_w)
+        if consistent_full and full_ok:
+            return "Group-wise INT8 全宽", f"gs={meta} 一致"
+        if consistent_pack and pack_ok:
+            return _packed_verdict("gs 元数据自洽", meta)
+        # 元数据与 scale 反推都不一致 → 虚标
+        if full_ok:
+            return "Group-wise INT8 全宽 (gs 元数据虚标)", \
+                   f"scale 反推 gs={round(gs_full)}, 元数据声称 {meta}"
+        return "Group-wise 待定", f"scale 反推 gs={gs_full:.1f}, 元数据声称 {meta}, 均不常见"
+    else:
+        if full_ok and not pack_ok:
+            return "Group-wise INT8 全宽", f"gs={round(gs_full)}"
+        if pack_ok and not full_ok:
+            return _packed_verdict("形状反推", round(gs_packed))
+        if full_ok and pack_ok:
+            return "Group-wise 待定", "全宽/半宽均可能, 需解包验证"
+        return "Group-wise 待定", f"gs 反推不常见 ({gs_full:.1f} / {gs_packed:.1f})"
+
+
+def parse_comfy_quant(t):
+    """comfy_quant 是 JSON 字节编码, 尝试解码"""
+    try:
+        if t.dtype == torch.uint8 or t.dtype == torch.int8:
+            s = bytes(t.tolist()).decode("utf-8")
+            return json.loads(s)
+    except Exception:
+        pass
+    return None
+
+
+def compute_ratio(sd):
+    """计算压缩比, 返回两种解读。
+
+    - ratio_unbiased: 无偏解读 — 不信任 w4a4_group_size 元数据,
+      int8/uint8 按全宽算 (×1), 保守下界 (防虚标污染判定)
+    - ratio_packed: 打包解读 — int8/uint8 + 2D scale 按 4bit 打包算 (×2),
+      若与无偏差异大说明量化层多为 4bit 打包
+    - int32 weight: 每元素装 8 个 4bit → fp16 参考 ×8 (torchao 格式确定)
+    返回 (ratio_unbiased, ratio_packed, total_gb, fp16_unbiased_gb)
+    """
+    total_bytes = 0
+    fp16_unbiased = 0
+    fp16_packed = 0
+    for k, v in sd.items():
+        if not isinstance(v, torch.Tensor):
+            continue
+        n = v.numel()
+        total_bytes += n * v.element_size()
+        mult_unbiased = 1
+        mult_packed = 1
+        if k.endswith(".weight"):
+            base = k[: -len("weight")]
+            if base + "weight_scale" in sd:
+                if v.dtype == torch.int32:
+                    mult_unbiased = 8
+                    mult_packed = 8    # torchao: 每个 int32 装 8 个 4bit
+                elif v.dtype in (torch.int8, torch.uint8):
+                    # 打包解读: int8/uint8 伴生 weight_scale → 每字节 2 个 4bit
+                    # (2D group scale 或 1D per-row scale 都可能打包, 由解包验证裁决)
+                    mult_packed = 2
+            elif base + "weight.absmax" in sd:
+                # bitsandbytes NF4/FP4: uint8 打包 4bit + absmax scale + quant_map 码本
+                # 打包解读: 每字节 2 个 4bit 值 → fp16 参考 ×4
+                if v.dtype == torch.uint8:
+                    mult_packed = 4
+                # 无偏解读: int8/uint8 不修正 (假设全宽)
+        fp16_unbiased += n * mult_unbiased * 2
+        fp16_packed += n * mult_packed * 2
+    if fp16_unbiased <= 0:
+        return None, None, 0, 0
+    r_u = total_bytes / fp16_unbiased * 100
+    r_p = total_bytes / fp16_packed * 100 if fp16_packed > 0 else None
+    return r_u, r_p, total_bytes / 1024**3, fp16_unbiased / 1024**3
+
+
+def _fmt_elems(n):
+    """元素数自适应格式化: B/M/K"""
+    if n >= 1e9:
+        return f"{n/1e9:.1f}B"
+    if n >= 1e6:
+        return f"{n/1e6:.1f}M"
+    if n >= 1e3:
+        return f"{n/1e3:.0f}K"
+    return str(n)
+
+
+def analyze_gguf(path):
+    """GGUF 文件分析: 文件签名 + 关键 KV 元数据 + 张量类型分布 (不读张量数据区)。
+
+    GGUF 布局: 文件签名(4B "GGUF") + version(u32) + tensor_count(u64) + metadata_kv_count(u64)
+    → KV 元数据 → 张量信息表 (name/n_dims/dims/type/offset) → 张量数据区
+    分块量化特点: Q4_K/Q6_K 等按 256 元素超块组织, scale/dmin 内嵌数据块
+    (不同于 safetensors 的独立 scale 张量, 故不走 nibble/解包判据)
+    """
+    fsize = os.path.getsize(path) / 1024 ** 3
+    type_count = Counter()
+    type_elems = Counter()
+    meta = {}
+    ver = n_tensor = n_kv = 0
+    try:
+        with open(path, "rb") as f:
+            sig = f.read(4)
+            if sig != b"GGUF":
+                print(f"[ERROR] 非 GGUF 文件签名: {sig!r}")
+                return None
+            ver, n_tensor, n_kv = struct.unpack("<IQQ", f.read(20))
+            for _ in range(n_kv):
+                k = _gguf_read_string(f)
+                vtype = struct.unpack("<I", f.read(4))[0]
+                v = _gguf_read_value(f, vtype)
+                if k in ("general.architecture", "general.name", "general.file_type",
+                         "general.size_label", "general.quantization_version",
+                         "general.parameter_count"):
+                    meta[k] = v
+            for _ in range(n_tensor):
+                _name = _gguf_read_string(f)
+                nd = struct.unpack("<I", f.read(4))[0]
+                dims = struct.unpack(f"<{nd}Q", f.read(8 * nd))
+                t = struct.unpack("<I", f.read(4))[0]
+                _offset = struct.unpack("<Q", f.read(8))[0]
+                type_count[t] += 1
+                n = 1
+                for d in dims:
+                    n *= d
+                type_elems[t] += n
+    except Exception as e:
+        print(f"[ERROR] GGUF 解析失败: {e}")
+        return None
+
+    total_t = sum(type_count.values())
+    total_elems = sum(type_elems.values())
+    est_bytes = 0.0
+    fp16_bytes = 0
+    ratio = None
+    dist_lines = []
+    for t, c in type_count.most_common():
+        name = GGML_TYPE_NAMES.get(t, f"type{t}")
+        bits = GGML_TYPE_BITS.get(t, 16)
+        n = type_elems[t]
+        est_bytes += n * bits / 8
+        fp16_bytes += n * 2
+        share_e = n / total_elems * 100 if total_elems else 0
+        dist_lines.append((name, c, _fmt_elems(n), share_e, bits))
+    if fp16_bytes > 0:
+        ratio = est_bytes / fp16_bytes * 100
+
+    # 主导按权重元素数计算 (张量个数会被大量小张量如 norm 干扰)
+    dom_t = max(type_elems, key=type_elems.get) if type_elems else None
+    dom_name = GGML_TYPE_NAMES.get(dom_t, f"type{dom_t}") if dom_t is not None else "?"
+    dom_elems = type_elems.get(dom_t, 0)
+    share = dom_elems / total_elems * 100 if total_elems else 0
+    arch = meta.get('general.architecture', '?')
+    type_str = f"GGUF v{ver} {arch} ({dom_name} 主导)"
+    load_advice = "llama.cpp 系 (ollama / llama-server / GGUF 原生)"
+
+    # ===== 渲染三区 =====
+    print_file_head(fsize, path)
+    print_sec_quick(type_str, load_advice, fsize, ratio)
+
+    # 📊 性能与结构评估
+    if fp16_bytes > 0:
+        protocol = f"GGUF v{ver} 分块量化"
+        algo = f"块级 scale 内嵌 (256 元素超块, {dom_name} 主导)"
+        print_sec_perf(fp16_bytes / 1024 ** 3, ratio, protocol, algo, "GGUF 分块量化")
+
+    print_sec_diag()
+    print(" [GGUF 容器与张量类型]")
+    print(f"  • 文件签名: GGUF | 版本 v{ver} | 张量 {n_tensor} 个 | KV 元数据 {n_kv} 项")
+    meta_parts = [f"architecture={arch}"]
+    for k in ("general.name", "general.file_type", "general.quantization_version"):
+        if k in meta:
+            meta_parts.append(f"{k.split('.')[-1]}={meta[k]}")
+    print(f"  • 元数据: " + " | ".join(meta_parts))
+    print(f"  • 类型分布 (按权重元素占比):")
+    for name, c, ne, se, bits in dist_lines:
+        print(f"      {name:<10}: {c} 张量  ({ne} 元素, {se:.1f}% 权重, ~{bits:.1f} bit/元素)")
+    if ratio is not None:
+        print(f"  • 压缩比估算: ~{ratio:.0f}% ({est_bytes/1024**3:.2f} GB vs 全 fp16 ~{fp16_bytes/1024**3:.2f} GB)")
+
+    print_sec_final()
+    print(f"  → 类型识别: {type_str}")
+    print(f"  → 识别依据: GGUF 文件签名 + 分块量化类型分布, {dom_name} 占 {share:.0f}% 权重元素 ({type_count.get(dom_t, 0)} 张量)")
+    if len(type_count) > 1:
+        others = ", ".join(f"{GGML_TYPE_NAMES.get(t, t)}×{c}" for t, c in type_count.most_common(6)[1:])
+        print(f"  → 混合构成: {others}")
+    print(f"  → 典型加载: {load_advice}")
+    if ratio is not None:
+        print(f"  → 结构要点: 估算压缩比 ~{ratio:.0f}%, {total_t} 个张量, 块级 scale 内嵌数据块")
+    print(BANNER)
+    return {
+        "path": path, "size_gb": fsize, "ratio": ratio,
+        "ratio_packed": None, "type": type_str, "verdicts": [],
+    }
+
+
+def analyze_file(path):
+    """分析单个模型文件: .safetensors → 量化格式; .gguf → 分块量化"""
+    if not os.path.exists(path):
+        print(f"[ERROR] 文件不存在: {path}")
+        return None
+    if path.lower().endswith(".gguf"):
+        return analyze_gguf(path)
+    if not path.lower().endswith(".safetensors"):
+        print(f"[SKIP] 非 safetensors/gguf 文件: {os.path.basename(path)}")
+        return None
+
+    fsize = os.path.getsize(path) / 1024 ** 3
+    sd = st.load_file(path, device="cpu")
+    n_keys = len(sd)
+    verdicts = []  # (维度, 判断, 证据)
+
+    # 1. 后缀统计
+    suffix = Counter()
+    for k in sd:
+        suf = k.rsplit(".", 1)[-1] if "." in k else "(none)"
+        suffix[suf] += 1
+    if suffix.get("weight_scale", 0):
+        verdicts.append(("key", "含 weight_scale 伴生张量", f"{suffix['weight_scale']} 个"))
+    if suffix.get("comfy_quant", 0):
+        verdicts.append(("key", "含 comfy_quant 元数据", f"{suffix['comfy_quant']} 个 → ComfyUI 量化协议"))
+    if suffix.get("weight_zp", 0):
+        verdicts.append(("key", "含 weight_zp (zero-point)", f"{suffix['weight_zp']} 个"))
+    if suffix.get("w4a4_group_size", 0):
+        verdicts.append(("key", "含 w4a4_group_size", "→ 需结合权重宽度判断 (可能真 INT4 或伪 W4A4)"))
+    if suffix.get("absmax", 0) and suffix.get("quant_map", 0):
+        verdicts.append(("key", "含 bnb 量化伴生 (absmax+quant_map)",
+                         f"{suffix['absmax']} 组 → bitsandbytes NF4/FP4 体系"))
+    if suffix.get("bitsandbytes__nf4", 0):
+        verdicts.append(("key", "含 bitsandbytes__nf4 标记",
+                         f"{suffix['bitsandbytes__nf4']} 个 → NF4 决定性证据"))
+
+    # 2. dtype 统计 (排除 1 维标量元数据)
+    dt = Counter()
+    scalar_meta = Counter()  # shape==(1,) 的标量元数据 (如 w4a4_group_size)
+    for k, v in sd.items():
+        if not isinstance(v, torch.Tensor):
+            continue
+        if v.ndim == 0 or (v.ndim == 1 and v.numel() <= 4):
+            scalar_meta[str(v.dtype)] += 1
+            continue
+        dt[str(v.dtype)] += 1
+    if dt.get("torch.int8", 0) > 0:
+        verdicts.append(("dtype", "存在 int8 张量", f"{dt['torch.int8']} 个"))
+    big_int32 = any(k.endswith(".weight") and v.dtype == torch.int32 and v.ndim >= 2
+                    for k, v in sd.items() if isinstance(v, torch.Tensor))
+    if big_int32:
+        verdicts.append(("dtype", "存在 int32 打包权重 (疑似 torchao)", "int32 weight + scale"))
+    if dt.get("torch.bfloat16", 0) > 0:
+        verdicts.append(("dtype", "存在 bf16 (未量化层)", f"{dt['torch.bfloat16']} 个"))
+
+    # 3. 压缩比 (双解读) — 提前计算, 供层分布做半宽/全宽裁决
+    ratio, ratio_packed, total_gb, fp16_gb = compute_ratio(sd)
+    if ratio is not None:
+        if ratio_packed is not None and abs(ratio_packed - ratio) > 5:
+            # 两种解读差异明显 → 量化层可能是 4bit 打包, 由结构证据裁决
+            verdicts.append(("压缩", f"无偏{ratio:.0f}%/打包{ratio_packed:.0f}%", "双解读差异大"))
+        elif ratio < 35:
+            verdicts.append(("压缩", "真 INT4 级", f"{ratio:.0f}%"))
+        elif ratio < 55:
+            verdicts.append(("压缩", "INT8 级", f"{ratio:.0f}%"))
+        elif ratio < 75:
+            verdicts.append(("压缩", "混合精度", f"{ratio:.0f}%"))
+        else:
+            verdicts.append(("压缩", "接近未量化", f"{ratio:.0f}%"))
+
+    # 4. 典型量化层结构 + 全模型格式分布
+    ws_keys = [k for k in sd if k.endswith(".weight_scale")]
+    bnb_keys = [k for k in sd if k.endswith(".weight.absmax")]
+    layer_types = Counter()
+    unpack_evidence = None   # True=解包验证4bit合法 / False=全宽 / None=未测
+    unpack_sample = None     # (key, 打包, 字节unique, lo, hi)
+    first_key = None
+    first_detail = None
+    if ws_keys or bnb_keys:
+        # bitsandbytes NF4/FP4 层 (absmax + quant_map 码本体系, 无 weight_scale)
+        for k in bnb_keys[:80]:
+            base = k[: -len(".weight.absmax")]
+            w = sd.get(base + ".weight")
+            s = sd[k]
+            if w is None or not isinstance(w, torch.Tensor):
+                continue
+            label = "NF4 (bitsandbytes)"
+            det = f"weight {tuple(w.shape)} {w.dtype}, absmax {tuple(s.shape)} 1D块级, quant_map 16值码本"
+            layer_types[label] += 1
+            if first_detail is None:
+                first_key, first_detail = k, det
+        for k in ws_keys[:80]:  # 采样前 80 层, 大模型足够代表
+            base = k[: -len("weight_scale")]
+            w = sd.get(base + "weight")
+            s = sd[k]
+            if w is None or not isinstance(w, torch.Tensor):
+                continue
+            gs_meta = None
+            gsk = base + "w4a4_group_size"
+            if gsk in sd:
+                gv = sd[gsk]
+                try:
+                    gs_meta = int(gv.item())
+                except Exception:
+                    gs_meta = None
+            N, K_w = w.shape[0], w.shape[1]
+            if w.dtype == torch.int32:
+                label, det = "torchao int32 打包", f"weight {N}x{K_w} int32, scale {tuple(s.shape)}"
+            elif s.ndim == 1:
+                # 1D scale 也可能是 per-row int4 打包 (无 group_size), 需解包验证
+                if w.dtype in (torch.int8, torch.uint8) and unpack_evidence is None:
+                    ok, bu, lo_u, hi_u = verify_unpack4(w)
+                    unpack_evidence = ok
+                    unpack_sample = (k, ok, bu, lo_u, hi_u)
+                if unpack_evidence is True:
+                    label, det = "INT4 per-row 打包 (非 nunchaku)", \
+                                 f"weight {N}x{K_w} {w.dtype}, scale 1D, 解包=合法4bit"
+                elif s.shape[0] == N:
+                    label, det = "INT8 per-row", f"weight {N}x{K_w} {w.dtype}, scale 1D"
+                else:
+                    label, det = "tensorwise/其它", f"weight {N}x{K_w}, scale {tuple(s.shape)}"
+            elif s.ndim == 2 and 1 in s.shape:
+                # scale 形如 (N,1)/(1,N): tensorwise 或 per-row 的列向量存储
+                if w.dtype in (torch.int8, torch.uint8) and unpack_evidence is None:
+                    ok, bu, lo_u, hi_u = verify_unpack4(w)
+                    unpack_evidence = ok
+                    unpack_sample = (k, ok, bu, lo_u, hi_u)
+                if unpack_evidence is True:
+                    label, det = "INT4 tensorwise 打包", \
+                                 f"weight {N}x{K_w} {w.dtype}, scale {tuple(s.shape)}, 解包=4bit"
+                elif s.shape[0] == N or s.shape[1] == N:
+                    label, det = "INT8 tensorwise/per-row", \
+                                 f"weight {N}x{K_w} {w.dtype}, scale {tuple(s.shape)}"
+                else:
+                    label, det = "tensorwise/其它", f"weight {N}x{K_w}, scale {tuple(s.shape)}"
+            elif s.ndim == 2:
+                # 对 int8/uint8 2D-scale 层做 4bit 解包验证 (决定性证据)
+                if w.dtype in (torch.int8, torch.uint8) and unpack_evidence is None:
+                    ok, bu, lo_u, hi_u = verify_unpack4(w)
+                    unpack_evidence = ok
+                    unpack_sample = (k, ok, bu, lo_u, hi_u)
+                label, det = infer_group_size(K_w, s, gs_meta=gs_meta, ratio=ratio,
+                                              numeric_packed=unpack_evidence,
+                                              unpack_ok=unpack_evidence)
+                det = f"weight {N}x{K_w} {w.dtype}, scale {tuple(s.shape)}, {det}"
+            else:
+                label, det = "未知", f"scale {tuple(s.shape)}"
+            layer_types[label] += 1
+            if first_detail is None:
+                first_key, first_detail = k, det
+
+        # 主结构判定 (取占比最高的)
+        dominant = layer_types.most_common(1)[0][0]
+        if "Packed INT4" in dominant:
+            verdicts.append(("结构", "Packed INT4 (半宽打包)", f"{layer_types[dominant]} 层主导"))
+        elif "Group-wise INT8 全宽 (gs 元数据虚标)" in dominant or "伪 W4A4" in dominant:
+            verdicts.append(("结构", "伪 W4A4 (group-wise INT8)", f"{layer_types[dominant]} 层主导, gs 虚标"))
+        elif "Group-wise INT8" in dominant:
+            verdicts.append(("结构", "Group-wise INT8", f"{layer_types[dominant]} 层主导"))
+        elif "INT4 per-row 打包" in dominant or "INT4 tensorwise 打包" in dominant:
+            verdicts.append(("结构", "INT4 per-row 打包", f"{layer_types[dominant]} 层主导"))
+        elif "INT8 tensorwise" in dominant:
+            verdicts.append(("结构", "INT8 tensorwise", f"{layer_types[dominant]} 层主导"))
+        elif "INT8 per-row" in dominant:
+            verdicts.append(("结构", "INT8 per-row", f"{layer_types[dominant]} 层主导"))
+        elif "NF4" in dominant:
+            verdicts.append(("结构", "NF4 (bitsandbytes)", f"{layer_types[dominant]} 层主导"))
+        elif "torchao" in dominant.lower():
+            verdicts.append(("结构", "torchao int32 打包", f"{layer_types[dominant]} 层主导"))
+        else:
+            verdicts.append(("结构", f"待定 ({dominant})", f"{layer_types[dominant]} 层主导"))
+    else:
+        for k in sd:
+            if k.endswith(".weight"):
+                first_key = k
+                first_detail = f"weight {tuple(sd[k].shape)} {sd[k].dtype}"
+                break
+        verdicts.append(("结构", "无 weight_scale", "可能未量化 或 GGUF 另行处理"))
+
+    # 5. comfy_quant 解析
+    comfy_quant_info = None
+    cq_keys = [k for k in sd if k.endswith(".comfy_quant")]
+    if cq_keys:
+        info = parse_comfy_quant(sd[cq_keys[0]])
+        if info:
+            comfy_quant_info = info
+            fmt = info.get("format", "?")
+            verdicts.append(("元数据", f"comfy_quant.format={fmt}", ""))
+            if info.get("group_size"):
+                verdicts.append(("元数据", f"group_size={info['group_size']}", ""))
+            if info.get("quarot"):
+                verdicts.append(("元数据", "quarot 旋转", ""))
+
+    # ===== 综合判定 =====
+    dominant = layer_types.most_common(1)[0][0] if layer_types else None
+    res = final_verdict(sd, verdicts, comfy_quant_info, ratio,
+                        layer_types, dominant, unpack_evidence, ratio_packed)
+    type_str = res["type"]
+
+    # ===== 渲染三区 =====
+    print_file_head(fsize, path)
+    print_sec_quick(type_str, res["load"], fsize, res["final_ratio"])
+
+    # 📊 性能与结构评估
+    if comfy_quant_info:
+        protocol = f"comfy_quant (format: {comfy_quant_info.get('format', '?')})"
+    elif type_str.startswith("NF4"):
+        protocol = "bitsandbytes NF4 (absmax + quant_map 码本)"
+    elif "Packed INT4" in type_str:
+        protocol = "字节打包 INT4 (每字节 2×4bit)"
+    elif "TorchAO" in type_str:
+        protocol = "torchao (int32 打包)"
+    elif "INT8" in type_str or "Group-wise" in type_str or "ComfyUI" in type_str:
+        protocol = "ComfyUI 量化体系"
+    elif "接近未量化" in type_str:
+        protocol = "无量化（原生 FP16/BF16）"
+    elif "混合精度" in type_str:
+        protocol = "部分层量化（无统一协议）"
+    else:
+        protocol = type_str
+    algo = ""
+    if comfy_quant_info and comfy_quant_info.get("convrot"):
+        algo = f"QuaRot 旋转优化 (convrot_groupsize={comfy_quant_info.get('convrot_groupsize', '?')})"
+    elif type_str.startswith("NF4"):
+        algo = "NF4 非线性码本 (16 值, 块级 absmax scale)"
+    elif "Packed INT4" in type_str:
+        algo = "group-wise 字节打包" if "group-wise" in type_str else "per-row 字节打包"
+    elif "TorchAO" in type_str:
+        algo = "int32 打包 (每 int32 装 8×4bit)"
+    elif "Group-wise INT8" in type_str:
+        algo = "group-wise INT8 (全宽 2D scale)"
+    elif "INT8 tensorwise" in type_str:
+        algo = "tensorwise 标量 scale"
+    elif "INT8 per-row" in type_str:
+        algo = "per-row 1D scale"
+    if type_str.startswith("NF4"):
+        save_note = "NF4 4bit 码本打包"
+    elif "INT4" in type_str or "TorchAO" in type_str:
+        save_note = "4bit 打包"
+    elif "INT8" in type_str or "Group-wise" in type_str:
+        save_note = "标准全宽 INT8，无打包"
+    elif "接近未量化" in type_str:
+        save_note = "无压缩，FP16/BF16 原生"
+    elif "混合精度" in type_str:
+        save_note = "部分量化"
+    else:
+        save_note = "量化压缩"
+    if fp16_gb:
+        print_sec_perf(fp16_gb, res["final_ratio"], protocol, algo, save_note)
+
+    print_sec_diag()
+    print(" [张量与数据类型分布]")
+    print(f"  • 总 Key 数: {n_keys}")
+    print(f"  • Key 后缀: " + " | ".join(f".{s}: {c}" for s, c in suffix.most_common(8)))
+    print(f"  • dtype: " + " | ".join(f"{d}: {c}" for d, c in dt.most_common()))
+    if scalar_meta:
+        print(f"  • 标量元数据 {dict(scalar_meta)} 已排除 (如 w4a4_group_size)")
+    print()
+
+    print(" [压缩比评估 (双解读分析)]")
+    if ratio is not None:
+        print(f"  • 实际数据: {total_gb:.2f} GB | 全 FP16 基准: ~{fp16_gb:.2f} GB")
+        if ratio_packed is not None and abs(ratio_packed - ratio) > 5:
+            print(f"  • 双解读: {ratio:.0f}% (无偏/全宽)  vs  {ratio_packed:.0f}% (若4bit打包)  [差异 {abs(ratio_packed - ratio):.0f}pt]")
+        else:
+            print(f"  • 压缩率: {ratio:.0f}%")
+        print(f"  • 裁决: {res['final_ratio']:.0f}% (按最终类型 {type_str} 选取)")
+    print()
+
+    print(" [量化层与采样验证]")
+    if layer_types:
+        print(f"  • 格式分布: " + " | ".join(f"{l}: {c} 层" for l, c in layer_types.most_common()))
+        if unpack_sample is not None:
+            print(f"  • 解包采样: {unpack_sample[0]}")
+            print(f"      └─ 打包={unpack_sample[1]} | 字节unique={unpack_sample[2]} | lo={unpack_sample[3]} hi={unpack_sample[4]}")
+        if first_key and first_detail:
+            print(f"  • 示例: {first_key}")
+            print(f"      └─ {first_detail}")
+    else:
+        print("  • 无 .weight_scale / .weight.absmax 伴生张量")
+        if first_detail:
+            print(f"  • 示例 weight: {first_detail}")
+    if comfy_quant_info:
+        print(f"  • comfy_quant: {json.dumps(comfy_quant_info, ensure_ascii=False)}")
+    print()
+
+    print_sec_final()
+    for dim, v, e in verdicts:
+        line = f"  [{dim}] {v}"
+        if e:
+            line += f"  ({e})"
+        print(line)
+    print(SECTION)
+    print(f"  → 类型识别: {type_str}")
+    for ev in res["evidence"]:
+        print(f"  → 识别依据: {ev}")
+    if res["load"]:
+        print(f"  → 典型加载: {res['load']}")
+    if res["extra"]:
+        print(f"  → 结构要点: " + "; ".join(res["extra"]))
+    if res["conflicts"]:
+        print("  ⚠ 证据冲突:")
+        for c in res["conflicts"]:
+            print(f"      - {c}")
+    print(BANNER)
+    return {
+        "path": path,
+        "size_gb": fsize,
+        "ratio": ratio,
+        "ratio_packed": ratio_packed,
+        "type": type_str,
+        "verdicts": verdicts,
+    }
+
+
+def final_verdict(sd, verdicts, comfy_quant_info, ratio, layer_types, dominant,
+                  unpack_evidence=None, ratio_packed=None):
+    """综合判定: 结论必须由「主导格式」+ 决定性验证推导, 证据链闭合。
+
+    只对模型本身下结论 (格式类型 + 结构参数), 不输出任何插件可用性判断。
+    - dominant: 采样层中出现最多的结构标签 (None = 无量化层)
+    - 少数层异常不推翻主导判定, 只追加警告
+    - 决定性信号 (comfy_quant / int32+weight_zp / bnb NF4) 优先级高于结构占比
+    返回 dict: {type, final_ratio, evidence, load, conflicts, extra}
+    """
+    has_comfy_quant = any(k.endswith(".comfy_quant") for k in sd)
+    has_nf4 = any(k.endswith(".bitsandbytes__nf4") for k in sd)
+    has_zp = any(k.endswith(".weight_zp") for k in sd)
+    big_int32 = any(k.endswith(".weight") and v.dtype == torch.int32 and v.ndim >= 2
+                    for k, v in sd.items() if isinstance(v, torch.Tensor))
+    lt = layer_types or {}
+    n_total = sum(lt.values())
+
+    def share_of(substr):
+        """返回包含子串的标签占总采样层的比例"""
+        n = sum(c for l, c in lt.items() if substr in l)
+        return n / n_total if n_total else 0
+
+    dom = dominant or ""
+    conflicts = []
+    extra = []
+    evidence = []
+
+    # --- 决定性信号 0: bitsandbytes NF4 (quant_state 标记, 物理证据) ---
+    if has_nf4:
+        n_nf4 = len([k for k in sd if k.endswith(".weight.absmax")])  # 全量 NF4 层数
+        n_plain = sum(1 for k, v in sd.items() if isinstance(v, torch.Tensor)
+                      and k.endswith(".weight")
+                      and v.dtype in (torch.bfloat16, torch.float16, torch.float32))
+        type_str = "NF4 (bitsandbytes) 量化"
+        evidence.append("bitsandbytes__nf4 quant_state 标记 + absmax/quant_map 码本 (决定性物理证据)")
+        extra.append(f"NF4 量化层 {n_nf4} 层 + 未量化 {n_plain} 层 (部分量化)")
+        if n_total > 0:
+            extra.append(f"采样结构: {dom}")
+
+    # --- 决定性信号 1: comfy_quant (ComfyUI 官方量化协议, 按 format 细分) ---
+    elif has_comfy_quant:
+        fmt = (comfy_quant_info or {}).get("format", "") or "unknown"
+        fl = fmt.lower()
+        # comfy_quant 是 ComfyUI 主仓库的量化元数据协议 (comfy/ops.py QUANT_ALGOS),
+        # format 字段是官方注册的格式名。按名称细分, 不做来源猜测。
+        if "int8" in fl:
+            type_str = f"ComfyUI INT8 ({fmt})"
+            extra.append("ComfyUI 原生 int8 量化 (QUANT_ALGOS 注册格式)")
+            if comfy_quant_info and comfy_quant_info.get("convrot"):
+                extra.append("带 QuaRot 旋转 (convrot_groupsize="
+                             f"{comfy_quant_info.get('convrot_groupsize', '?')})")
+        elif "int4" in fl or "tint4" in fl:
+            type_str = f"ComfyUI INT4 ({fmt})"
+            extra.append("int32 打包 + weight_scale/zp 伴生 (TINT4/ComfyUI 协议)")
+        elif "fp8" in fl:
+            type_str = f"ComfyUI FP8 ({fmt})"
+            extra.append("float8 权重 + scale 伴生")
+        elif "nf4" in fl:
+            type_str = f"NF4 ({fmt})"
+            extra.append("NF4 量化, 非字节打包布局")
+        else:
+            type_str = f"ComfyUI 量化 ({fmt})"
+            extra.append(f"comfy_quant.format={fmt} (ComfyUI QUANT_ALGOS 注册格式)")
+        evidence.append("comfy_quant 专有元数据 (ComfyUI 官方量化协议, 非 torchao)")
+        if n_total > 0:
+            extra.append(f"量化层 {n_total} 层主导: {dom}")
+
+    # --- 决定性信号 2: int32 打包 + weight_zp (非对称 INT4) ---
+    elif has_zp and big_int32:
+        type_str = "非对称 INT4 (含 zero-point + int32 打包)"
+        evidence.append("weight_zp + int32 打包张量")
+        extra.append("带 zero-point, 非对称量化")
+
+    # --- 主导格式: Packed INT4 (需 主导占比 + 解包验证 双证据) ---
+    elif share_of("Packed INT4") >= 0.5 and unpack_evidence is True:
+        type_str = "Packed INT4 (group-wise, nunchaku 风格)"
+        evidence.append("半宽 int8/uint8 字节打包权重 + 2D group scale, 主导层占比 "
+                        f"{share_of('Packed INT4')*100:.0f}%, 解包验证=合法4bit")
+        extra.append("字节打包布局 (每字节 2 个 4bit), 含 group_size 元数据")
+
+    # --- Packed INT4 形状自洽但证据不足: 降级提示 ---
+    elif share_of("Packed INT4") >= 0.5:
+        type_str = "疑似 Packed INT4 (证据不足, 保守按 INT8 处理)"
+        evidence.append(f"形状半宽自洽, 但解包验证缺失/失败: {unpack_evidence} (需 4bit 值域合法)")
+        extra.append("建议结合转换工具日志或人工复核确认")
+
+    # --- 主导格式: 伪 W4A4 / group-wise INT8 ---
+    elif "虚标" in dom or "伪 W4A4" in dom:
+        type_str = "Group-wise INT8 (伪 W4A4 / 命名不符)"
+        evidence.append("全宽 INT8 权重 + w4a4_group_size 误导性元数据, "
+                        f"主导 {dom} ({share_of('虚标')*100:.0f}%)")
+        extra.append("gs 元数据与 scale 布局不匹配, 实际为 8bit 权重")
+
+    # --- 主导格式: Group-wise INT8 (真 group-wise, 非虚标) ---
+    elif "Group-wise INT8" in dom:
+        type_str = "Group-wise INT8"
+        evidence.append("全宽 INT8 权重 + 2D scale, group_size 自洽")
+        extra.append("2D [G,N] scale, group_size 与权重宽度匹配")
+
+    # --- 主导格式: INT4 per-row 打包 (无 group_size) ---
+    elif "INT4 per-row 打包" in dom or "INT4 tensorwise 打包" in dom:
+        type_str = "INT4 per-row 打包 (无 group_size)"
+        evidence.append("1D per-row scale + 解包验证=合法4bit, 但无 group_size/2D scale")
+        extra.append("per-row 布局, 每输出行一个 scale")
+
+    # --- 主导格式: INT8 tensorwise (列向量 scale) ---
+    elif "INT8 tensorwise" in dom:
+        type_str = "INT8 tensorwise/per-row"
+        evidence.append("scale 形如 (N,1) 列向量, 每行一个 scale, 无打包")
+        extra.append("1D 语义 scale, tensorwise 或 per-row 布局")
+
+    # --- 主导格式: INT8 per-row ---
+    elif "INT8 per-row" in dom:
+        type_str = "INT8 per-row / INT8+BF16 混合"
+        evidence.append("1D per-row scale, 无位打包结构")
+        extra.append("1D scale [N], 每行一个 scale")
+
+    # --- 主导格式: torchao int32 ---
+    elif "torchao" in dom.lower():
+        type_str = "TorchAO INT4 (int32 打包)"
+        evidence.append("int32 打包权重主导 (但无 comfy_quant 元数据)")
+        extra.append("int32 打包 + 2D scale, 疑似 torchao affine 布局")
+
+    # --- 无量化层: 看压缩比 ---
+    elif n_total == 0 and ratio is not None:
+        if ratio >= 75:
+            # 动态显示未量化层实际主 dtype
+            dcount = Counter()
+            for k, v in sd.items():
+                if isinstance(v, torch.Tensor) and v.ndim >= 2:
+                    dcount[str(v.dtype)] += 1
+            main_dt = dcount.most_common(1)[0][0] if dcount else ""
+            if "float16" in main_dt:
+                type_str = "接近未量化 (fp16 为主)"
+            elif "bfloat16" in main_dt:
+                type_str = "接近未量化 (bf16 为主)"
+            else:
+                type_str = "接近未量化"
+            evidence.append(f"压缩比 {ratio:.0f}% ≥75%, 无量化伴生张量")
+            extra.append("压缩比 ≥75%, 无量化伴生张量")
+        elif ratio < 55:
+            type_str = "INT8 / INT8+BF16 混合 (无伴生 scale)"
+            evidence.append("无 weight_scale 但压缩比显著")
+            extra.append("压缩比显著但无 scale 结构, 可能为全局/tensorwise 量化")
+        else:
+            type_str = "混合精度 (部分层量化)"
+            evidence.append(f"压缩比 {ratio:.0f}% 中等, 部分层量化")
+            extra.append("压缩比中等, 部分层量化")
+
+    # --- 兜底 ---
+    else:
+        type_str = "格式不明确"
+        evidence.append("无法归入已知量化格式" + (f", 主导格式 {dom}" if dom else ""))
+        extra.append("无法归入已知量化格式")
+
+    # --- 通用加载建议 (仅基于格式本身, 不绑定插件) ---
+    load_advice = ""
+    if type_str.startswith("ComfyUI INT8"):
+        load_advice = "ComfyUI 原生加载 (QUANT_ALGOS 内置, 无需第三方节点)"
+    elif type_str.startswith("ComfyUI INT4"):
+        load_advice = "ComfyUI 原生 / TINT4 节点 (comfy_quant 协议)"
+    elif type_str.startswith("ComfyUI FP8") or type_str.startswith("ComfyUI 量化"):
+        load_advice = "ComfyUI 原生加载 (QUANT_ALGOS 内置)"
+    elif type_str.startswith("NF4"):
+        load_advice = "bitsandbytes NF4 加载器 (bnb 原生, 非 ComfyUI 协议)"
+    elif "Packed INT4" in type_str and "group-wise" in type_str:
+        load_advice = "支持字节打包 INT4 的后端 (如 nunchaku 系)"
+    elif "INT4 per-row" in type_str:
+        load_advice = "支持 per-row INT4 打包的后端 (非标准 nunchaku 布局)"
+    elif "INT8" in type_str or "Group-wise INT8" in type_str:
+        load_advice = "ComfyUI 原生 int8 加载"
+    elif type_str.startswith("接近未量化") or type_str.startswith("混合精度"):
+        load_advice = "标准 fp16/bf16 加载器"
+
+    # --- 冲突检查: 决定性信号 vs 结构占比不一致时警告 ---
+    if has_comfy_quant and n_total > 0:
+        fmt = ((comfy_quant_info or {}).get("format", "") or "").lower()
+        doml = dom.lower()
+        expected = None
+        if "int8" in fmt:
+            expected = ["int8", "torchao"]
+        elif "int4" in fmt or "tint4" in fmt:
+            expected = ["int4", "torchao", "int32"]
+        elif "fp8" in fmt:
+            expected = ["fp8", "torchao"]
+        if expected and not any(e in doml for e in expected):
+            conflicts.append(f"comfy_quant.format={fmt} 与结构主导 [{dom}] 不一致")
+    if has_zp and big_int32 and share_of("torchao") < 0.5 and n_total > 0:
+        conflicts.append(f"weight_zp+int32 存在但结构主导为 [{dom}]")
+    if share_of("Packed INT4") > 0 and share_of("Packed INT4") < 0.5 and "Packed INT4" in type_str:
+        conflicts.append(f"Packed INT4 占比仅 {share_of('Packed INT4')*100:.0f}%, 非绝对主导")
+
+    # --- 裁决压缩比: 打包类格式取打包解读, 其余取无偏解读 ---
+    final_ratio = ratio
+    packed_like = any(x in type_str for x in ("Packed INT4", "INT4", "NF4", "TorchAO", "非对称 INT4"))
+    if packed_like and ratio_packed is not None:
+        final_ratio = ratio_packed
+
+    return {"type": type_str, "final_ratio": final_ratio, "evidence": evidence,
+            "load": load_advice, "conflicts": conflicts, "extra": extra}
+
+
+def main(args):
+    if len(args) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    targets = args[1:]
+    files = []
+    for t in targets:
+        if os.path.isdir(t):
+            for root, _, fns in os.walk(t):
+                for fn in fns:
+                    if fn.lower().endswith((".safetensors", ".gguf")):
+                        files.append(os.path.join(root, fn))
+        else:
+            files.append(t)
+
+    if not files:
+        print("[ERROR] 未找到 .safetensors / .gguf 文件")
+        sys.exit(1)
+
+    results = []
+    for f in files:
+        r = analyze_file(f)
+        if r:
+            results.append(r)
+
+    # 汇总表
+    if len(results) > 1:
+        print("\n" + "=" * 78)
+        print("【批量扫描汇总】")
+        print(f"{'模型':<44} {'大小':>7} {'无偏%':>6} {'打包%':>6}  判定")
+        print("-" * 78)
+        for info in results:
+            name = os.path.basename(info["path"])[:42]
+            ratio_s = f"{info['ratio']:.0f}" if info["ratio"] is not None else " - "
+            rp_s = f"{info['ratio_packed']:.0f}" if info.get("ratio_packed") is not None else " - "
+            print(f"  {name:<42} {info['size_gb']:>6.2f}G {ratio_s:>6} {rp_s:>6}  {info['type']}")
+        print("=" * 78)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
