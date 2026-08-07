@@ -117,13 +117,25 @@ npx skills add allanmeng/model-format-verifier@skill
 
 已发布到 [clawhub.ai](https://clawhub.ai) 后可一键安装。
 
-### 3. Windows 右键菜单（零依赖，SendTo 方案）
+### 3. Windows 右键菜单（两种方案，零依赖）
+
+**方案 A：发送到（推荐）**
 
 ```
-scripts\install_sendto.bat     # 一键安装
+scripts\install_sendto.bat
 ```
 
-脚本会把「Check Model」「Scan Models」快捷方式放入系统 SendTo 目录。之后右键任意 `.safetensors` / `.gguf` 文件 → **发送到 → Check Model** 即可检测；右键文件夹 → **发送到 → Scan Models** 批量扫描。
+在系统 SendTo 目录创建快捷方式。之后右键 `.safetensors` / `.gguf` 文件 → **发送到 → Check Model** 检测；右键文件夹 → **发送到 → Scan Models** 批量扫描。
+
+**方案 B：经典右键菜单（菜单项直接出现）**
+
+```
+scripts\install_classic_reg.bat
+```
+
+注册 HKCU 用户级右键菜单：右键 `.safetensors` / `.gguf` 直接出现 **Check Model** 菜单项，右键文件夹出现 **Scan Models**（Windows 11 显示在「显示更多选项」中）。卸载：`install_classic_reg.bat uninstall`。
+
+> 两个方案可同时安装，互不冲突。检测脚本顶部 CONFIG 区可配置 Python 路径（留空则使用系统 PATH 中的 python）。
 
 ## 目录结构
 
@@ -135,9 +147,10 @@ model-format-verifier/
 │   ├── scripts/check_model.py
 │   └── references/          # 环境参考 + 案例库
 ├── scripts/
-│   ├── mfv_check.bat       # 右键单文件检测
-│   ├── mfv_scan.bat        # 右键批量扫描
-│   └── install_sendto.bat   # 右键菜单一键安装
+│   ├── mfv_check.bat            # 检测脚本（CONFIG 参数化）
+│   ├── mfv_scan.bat             # 批量扫描脚本（CONFIG 参数化）
+│   ├── install_sendto.bat       # 集成方案 A：发送到
+│   └── install_classic_reg.bat  # 集成方案 B：经典右键菜单
 └── docs/                    # 开发上下文 / 格式覆盖地图
 ```
 
