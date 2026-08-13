@@ -75,7 +75,7 @@ def print_sec_quick(type_str, load_advice, fsize, ratio=None):
         print(f"  • 显存参考: 磁盘 {fsize:.2f} GB (估算, 推理占用视引擎而定)")
 
 
-def print_sec_perf(fp16_gb, final_ratio, protocol, algo, save_note):
+def print_sec_perf(fp16_gb, final_ratio, protocol, algo, save_note, mechanism=""):
     """📊 性能与结构评估区 (介于速览与深度诊断之间)"""
     print()
     print(SECTION)
@@ -91,6 +91,37 @@ def print_sec_perf(fp16_gb, final_ratio, protocol, algo, save_note):
     print(f"  • 量化协议: {protocol}")
     if algo:
         print(f"  • 关键算法: {algo}")
+    if mechanism:
+        print(f"  • 量化机制: {mechanism}")
+
+
+def _quant_mechanism(type_str, comfy_quant_info=None):
+    """把检测到的结构翻译为量化机制一句话（原理注记, 对应量化方法速查表的「思路」列）"""
+    tl = type_str.lower()
+    fl = ((comfy_quant_info or {}).get("format", "") or "").lower()
+    if "nf4" in tl and "bitsandbytes" in tl:
+        return "归一化 4bit：16 值非线性码本 + 块级 absmax 缩放"
+    if "comfyui int8" in tl or "int8" in fl:
+        if comfy_quant_info and comfy_quant_info.get("convrot"):
+            return "QuaRot 旋转消除离群值 → 通道级 int8 定点缩放"
+        return "通道级/tensorwise int8 定点缩放"
+    if "comfyui int4" in tl or "tint4" in fl:
+        return "int32 打包（每 int32 装 8×4bit）+ 通道级缩放"
+    if "fp8" in fl:
+        return "8-bit 浮点（e4m3/e5m2 指数尾数分配）"
+    if "packed int4" in tl:
+        return "字节打包：每字节 2×4bit，group-wise 缩放" if "group-wise" in tl else "字节打包：每字节 2×4bit，per-row 缩放"
+    if "torchao" in tl:
+        return "affine int32 打包（每 int32 装 8×4bit）"
+    if "非对称" in tl:
+        return "zero-point 非对称量化（int32 打包）"
+    if "group-wise int8" in tl:
+        return "group-wise int8 定点（组共享 scale）"
+    if "接近未量化" in tl:
+        return "无压缩（原生 fp16/bf16 精度）"
+    if "混合精度" in tl:
+        return "部分层量化（量化层 + 原生精度层混合）"
+    return ""
 
 
 def print_sec_diag():
@@ -375,7 +406,8 @@ def analyze_gguf(path):
     if fp16_bytes > 0:
         protocol = f"GGUF v{ver} 分块量化"
         algo = f"块级 scale 内嵌 (256 元素超块, {dom_name} 主导)"
-        print_sec_perf(fp16_bytes / 1024 ** 3, ratio, protocol, algo, "GGUF 分块量化")
+        mechanism = f"分块量化：{dom_name} 块级缩放（块内共享 scale/dmin）"
+        print_sec_perf(fp16_bytes / 1024 ** 3, ratio, protocol, algo, "GGUF 分块量化", mechanism)
 
     print_sec_diag()
     print(" [GGUF 容器与张量类型]")
@@ -655,7 +687,8 @@ def analyze_file(path):
     else:
         save_note = "量化压缩"
     if fp16_gb:
-        print_sec_perf(fp16_gb, res["final_ratio"], protocol, algo, save_note)
+        mechanism = _quant_mechanism(type_str, comfy_quant_info)
+        print_sec_perf(fp16_gb, res["final_ratio"], protocol, algo, save_note, mechanism)
 
     print_sec_diag()
     print(" [张量与数据类型分布]")

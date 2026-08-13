@@ -101,6 +101,10 @@ python scripts/check_model.py <目录>                    # 批量扫描
 | 无 weight_scale + 压缩比显著 | INT8/混合精度 | 无伴生结构 |
 | 压缩比 ≥75% 无量化结构 | 接近未量化 | — |
 
+## 量化方法速查表 (详见 references/quantization-methods.md)
+
+常见量化方法（SVDQuant/GGUF/INT8 ConvRot/FP8/NF4 等）的思路、文件特征与识别情况对照；「量化机制」输出字段的翻译映射。
+
 ## 真实案例库 (详见 references/case-studies.md)
 
 | 模型 | 表象 | 真实结论 | 发现的漏洞 |
