@@ -3,11 +3,11 @@ chcp 65001 >nul
 title MFV - Install Classic Context Menu
 
 rem ============================================================
-rem  安装「经典右键菜单」方案 (HKCU 用户级, 无需管理员)
-rem  效果: 右键 .safetensors / .gguf 直接出现 "Check Model"
-rem        右键文件夹出现 "Scan Models"
-rem  Win11 提示: 传统注册表菜单显示在 "显示更多选项" 里
-rem  卸载: 运行本脚本并加参数 uninstall
+rem  Install "classic context menu" integration (HKCU, no admin)
+rem  Result: right-click .safetensors / .gguf -> "Check Model"
+rem          right-click a folder -> "Scan Models"
+rem  Note: on Windows 11 these items appear under "Show more options"
+rem  Uninstall: run with "uninstall" argument
 rem        install_classic_reg.bat uninstall
 rem ============================================================
 

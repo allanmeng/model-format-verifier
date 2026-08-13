@@ -4,9 +4,9 @@ set PYTHONUTF8=1
 title MFV - Batch Scan Directory
 
 rem ================== CONFIG ==================
-rem Python 解释器路径; 留空则使用系统 PATH 中的 python
+rem Python interpreter path; leave empty to use PATH python
 set PYTHON=F:\ComfyUI-aki-v3\python\python.exe
-rem check_model.py 路径; 默认自动定位到本脚本上级目录, 一般无需修改
+rem check_model.py path; auto-detect from script location by default
 set SCRIPT=%~dp0..\check_model.py
 rem ============================================
 

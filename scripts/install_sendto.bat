@@ -3,11 +3,11 @@ chcp 65001 >nul
 title MFV - Install SendTo Menu
 
 rem ============================================================
-rem  安装「发送到」方案: 在系统 SendTo 目录创建快捷方式
-rem  效果: 右键 .safetensors / .gguf -> 发送到 -> Check Model
-rem        右键文件夹 -> 发送到 -> Scan Models
-rem  依赖: PowerShell (Windows 自带)
-rem  卸载: 删除 SendTo 目录下的 Check Model.lnk / Scan Models.lnk
+rem  Install "Send To" integration: create shortcuts in SendTo
+rem  Result: right-click .safetensors / .gguf -> Send To -> Check Model
+rem          right-click a folder -> Send To -> Scan Models
+rem  Requires: PowerShell (built-in on Windows)
+rem  Uninstall: delete Check Model.lnk / Scan Models.lnk in SendTo
 rem ============================================================
 
 set SENDTO=%APPDATA%\Microsoft\Windows\SendTo
