@@ -277,9 +277,12 @@ def print_sec_perf(fp16_gb, final_ratio, protocol, algo, save_note, mechanism=""
     if final_ratio is not None:
         save_pct = 100 - final_ratio
         if save_pct > 0.5:  # 阈值防浮点噪声 (-0% / 0.01%)
-            print(f"  • {_l('f_save')}: ~{save_pct:.0f}% ⏬ ({save_note})")
+            if LANG == "en":
+                print(f"  • {_l('f_save')}: ~{save_pct:.0f}% ⏬ ({save_note})")
+            else:
+                print(f"  • {_l('f_save')}: 约 {save_pct:.0f}% ⏬ ({save_note})")
         else:
-            print(f"  • {_l('f_save')}: ~0% ({save_note})")
+            print(f"  • {_l('f_save')}: ~0% ({save_note})" if LANG == "en" else f"  • {_l('f_save')}: 约 0% ({save_note})")
     print(f"  • {_l('f_proto')}: {protocol}")
     if algo:
         print(f"  • {_l('f_algo')}: {algo}")
@@ -664,9 +667,12 @@ def _verdict_en(text):
         ("码本", "codebook"),
         ("标记", "markers"),
         ("伴生张量", "companion tensors"),
+        ("伴生", "companions"),
+        ("协议", "protocol"),
         ("张量", "tensors"),
         ("层", "layers"),
         ("旋转", "rotation"),
+        (" 个", ""),
     )
     for zh, en in pairs:
         t = t.replace(zh, en)
@@ -1243,31 +1249,33 @@ def analyze_file(path):
         protocol = type_str
     algo = ""
     if comfy_quant_info and comfy_quant_info.get("convrot"):
-        algo = f"QuaRot 旋转优化 (convrot_groupsize={comfy_quant_info.get('convrot_groupsize', '?')})"
+        algo = (f"QuaRot rotation optimization (convrot_groupsize={comfy_quant_info.get('convrot_groupsize', '?')})"
+                if LANG == "en"
+                else f"QuaRot 旋转优化 (convrot_groupsize={comfy_quant_info.get('convrot_groupsize', '?')})")
     elif type_str.startswith("NF4"):
-        algo = "NF4 非线性码本 (16 值, 块级 absmax scale)"
+        algo = "NF4 non-linear codebook (16 values, block-wise absmax scale)" if LANG == "en" else "NF4 非线性码本 (16 值, 块级 absmax scale)"
     elif "Packed INT4" in type_str:
-        algo = "group-wise 字节打包" if "group-wise" in type_str else "per-row 字节打包"
+        algo = ("group-wise byte packing" if LANG == "en" else "group-wise 字节打包") if "group-wise" in type_str else (("per-row byte packing" if LANG == "en" else "per-row 字节打包"))
     elif "TorchAO" in type_str:
-        algo = "int32 打包 (每 int32 装 8×4bit)"
+        algo = "int32 packing (8×4bit per int32)" if LANG == "en" else "int32 打包 (每 int32 装 8×4bit)"
     elif "Group-wise INT8" in type_str:
-        algo = "group-wise INT8 (全宽 2D scale)"
+        algo = "group-wise INT8 (full-width 2D scale)" if LANG == "en" else "group-wise INT8 (全宽 2D scale)"
     elif "INT8 tensorwise" in type_str:
-        algo = "tensorwise 标量 scale"
+        algo = "tensorwise scalar scale" if LANG == "en" else "tensorwise 标量 scale"
     elif "INT8 per-row" in type_str:
         algo = "per-row 1D scale"
     if type_str.startswith("NF4"):
-        save_note = "NF4 4bit 码本打包"
+        save_note = "NF4 4-bit codebook packing" if LANG == "en" else "NF4 4bit 码本打包"
     elif "INT4" in type_str or "TorchAO" in type_str:
-        save_note = "4bit 打包"
+        save_note = "4-bit packing" if LANG == "en" else "4bit 打包"
     elif "INT8" in type_str or "Group-wise" in type_str:
-        save_note = "标准全宽 INT8，无打包"
+        save_note = "standard full-width INT8, no packing" if LANG == "en" else "标准全宽 INT8，无打包"
     elif "接近未量化" in type_str:
-        save_note = "无压缩，FP16/BF16 原生"
+        save_note = "uncompressed, native FP16/BF16" if LANG == "en" else "无压缩，FP16/BF16 原生"
     elif "混合精度" in type_str:
-        save_note = "部分量化"
+        save_note = "partially quantized" if LANG == "en" else "部分量化"
     else:
-        save_note = "量化压缩"
+        save_note = "quantized compression" if LANG == "en" else "量化压缩"
     if fp16_gb:
         mechanism = _quant_mechanism(type_str, comfy_quant_info)
         print_sec_perf(fp16_gb, res["final_ratio"], protocol, algo, save_note, mechanism)
@@ -1276,48 +1284,63 @@ def analyze_file(path):
 
     print_sec_diag()
     print(" " + _l("sub_tensor"))
-    print(f"  • 总 Key 数: {n_keys}")
-    print(f"  • Key 后缀: " + " | ".join(f".{s}: {c}" for s, c in suffix.most_common(8)))
-    print(f"  • dtype: " + " | ".join(f"{d}: {c}" for d, c in dt.most_common()))
-    if scalar_meta:
-        if LANG == "en":
+    if LANG == "en":
+        print(f"  • total keys: {n_keys}")
+        print(f"  • key suffixes: " + " | ".join(f".{s}: {c}" for s, c in suffix.most_common(8)))
+        print(f"  • dtype: " + " | ".join(f"{d}: {c}" for d, c in dt.most_common()))
+        if scalar_meta:
             print(f"  • scalar metadata {dict(scalar_meta)} excluded (e.g. w4a4_group_size)")
-        else:
+    else:
+        print(f"  • 总 Key 数: {n_keys}")
+        print(f"  • Key 后缀: " + " | ".join(f".{s}: {c}" for s, c in suffix.most_common(8)))
+        print(f"  • dtype: " + " | ".join(f"{d}: {c}" for d, c in dt.most_common()))
+        if scalar_meta:
             print(f"  • 标量元数据 {dict(scalar_meta)} 已排除 (如 w4a4_group_size)")
     print()
 
     print(" " + _l("sub_ratio"))
     if ratio is not None:
-        print(f"  • 实际数据: {total_gb:.2f} GB | 全 FP16 基准: ~{fp16_gb:.2f} GB")
-        if ratio_packed is not None and abs(ratio_packed - ratio) > 5:
-            if LANG == "en":
+        if LANG == "en":
+            print(f"  • actual: {total_gb:.2f} GB | full FP16 baseline: ~{fp16_gb:.2f} GB")
+            if ratio_packed is not None and abs(ratio_packed - ratio) > 5:
                 print(f"  • dual: {ratio:.0f}% (unbiased/full)  vs  {ratio_packed:.0f}% (if 4bit packed)  [gap {abs(ratio_packed - ratio):.0f}pt]")
             else:
-                print(f"  • 双解读: {ratio:.0f}% (无偏/全宽)  vs  {ratio_packed:.0f}% (若4bit打包)  [差异 {abs(ratio_packed - ratio):.0f}pt]")
-        else:
-            print(f"  • 压缩率: {ratio:.0f}%")
-        if LANG == "en":
+                print(f"  • ratio: {ratio:.0f}%")
             print(f"  • verdict: {res['final_ratio']:.0f}% (by final type {_type_en(type_str)})")
         else:
+            print(f"  • 实际数据: {total_gb:.2f} GB | 全 FP16 基准: ~{fp16_gb:.2f} GB")
+            if ratio_packed is not None and abs(ratio_packed - ratio) > 5:
+                print(f"  • 双解读: {ratio:.0f}% (无偏/全宽)  vs  {ratio_packed:.0f}% (若4bit打包)  [差异 {abs(ratio_packed - ratio):.0f}pt]")
+            else:
+                print(f"  • 压缩率: {ratio:.0f}%")
             print(f"  • 裁决: {res['final_ratio']:.0f}% (按最终类型 {type_str} 选取)")
     print()
 
     print(" " + _l("sub_sample"))
     if layer_types:
-        print(f"  • 格式分布: " + " | ".join(f"{l}: {c} 层" for l, c in layer_types.most_common()))
-        if unpack_sample is not None:
-            print(f"  • 解包采样: {unpack_sample[0]}")
-            print(f"      └─ 打包={unpack_sample[1]} | 字节unique={unpack_sample[2]} | lo={unpack_sample[3]} hi={unpack_sample[4]}")
-        if first_key and first_detail:
-            print(f"  • 示例: {first_key}")
-            print(f"      └─ {first_detail}")
+        if LANG == "en":
+            print(f"  • format distribution: " + " | ".join(f"{_verdict_en(l)}: {c} layers" for l, c in layer_types.most_common()))
+            if unpack_sample is not None:
+                print(f"  • unpack sample: {unpack_sample[0]}")
+                print(f"      └─ packed={unpack_sample[1]} | byte unique={unpack_sample[2]} | lo={unpack_sample[3]} hi={unpack_sample[4]}")
+            if first_key and first_detail:
+                print(f"  • example: {first_key}")
+                print(f"      └─ {first_detail}")
+        else:
+            print(f"  • 格式分布: " + " | ".join(f"{l}: {c} 层" for l, c in layer_types.most_common()))
+            if unpack_sample is not None:
+                print(f"  • 解包采样: {unpack_sample[0]}")
+                print(f"      └─ 打包={unpack_sample[1]} | 字节unique={unpack_sample[2]} | lo={unpack_sample[3]} hi={unpack_sample[4]}")
+            if first_key and first_detail:
+                print(f"  • 示例: {first_key}")
+                print(f"      └─ {first_detail}")
     else:
         if LANG == "en":
             print("  • no .weight_scale / .weight.absmax companion tensors")
         else:
             print("  • 无 .weight_scale / .weight.absmax 伴生张量")
         if first_detail:
-            print(f"  • 示例 weight: {first_detail}")
+            print(f"  • example weight: {first_detail}" if LANG == "en" else f"  • 示例 weight: {first_detail}")
     if comfy_quant_info:
         print(f"  • comfy_quant: {json.dumps(comfy_quant_info, ensure_ascii=False)}")
     print()

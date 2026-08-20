@@ -30,86 +30,90 @@ python check_model.py <模型目录>
 ## 输出示例
 
 ```
+
 ================================================================================
  📦 MFV 模型检查工具 v1.1.0
 ================================================================================
- 文件: z_image_turbo_int8_convrot.safetensors
- 大小: 5.78 GB
+ 文件: Flux.2-Klein-9B-Turbo_tint4_torchao.safetensors
+ 大小: 4.91 GB
  路径: /path/to/models/
 
 --------------------------------------------------------------------------------
  💡 【普通用户速览】
 --------------------------------------------------------------------------------
-  • 模型类型: ComfyUI INT8 (int8_tensorwise)
-  • 典型加载: ComfyUI 原生加载 (QUANT_ALGOS 内置, 无需第三方节点)
-  • 显存参考: 磁盘 5.78 GB (估算; 相比全 FP16 约省 50%)
+  • 模型类型: ComfyUI INT4 (tint4_torchao)
+  • 典型加载: ComfyUI 原生 / TINT4 节点 (comfy_quant 协议)
+  • 显存参考: 磁盘 4.91 GB (估算; 相比全 FP16 约省 71%)
 
 --------------------------------------------------------------------------------
  📊 【性能与结构评估】
 --------------------------------------------------------------------------------
-  • 原始等效: ~11.47 GB (FP16 基础)
-  • 显存节省: 约 50% ⏬ (标准全宽 INT8，无打包)
-  • 量化协议: comfy_quant (format: int8_tensorwise)
-  • 关键算法: QuaRot 旋转优化 (convrot_groupsize=256)
-  • 量化机制: QuaRot 旋转消除离群值 → 通道级 int8 定点缩放
+  • 原始等效: ~17.16 GB (FP16 基础)
+  • 显存节省: 约 71% ⏬ (4bit 打包)
+  • 量化协议: comfy_quant (format: tint4_torchao)
+  • 量化机制: int32 打包（每 int32 装 8×4bit）+ 通道级缩放
 
-  [激活位宽 (A) 推导]
-  • 模型元数据: comfy_quant.format=int8_tensorwise
+ [激活位宽 (A) 推导]
+  • 模型元数据: comfy_quant.format=tint4_torchao, per_block, quarot, gs=128
   • 文件后缀:   .safetensors
-  • 权重位宽 W: 8 bit（int8 定点）
-  • 激活位宽 A: A8 为主, A16 可选   ⚠ 引擎相关, 非文件证据
+  • 权重位宽 W: 4 bit
+  • 激活位宽 A: A16 为主（ComfyUI 默认）, A8 可选   ⚠ 引擎相关, 非文件证据
 
 --------------------------------------------------------------------------------
  🔍 【开发者深度诊断】
 --------------------------------------------------------------------------------
  [张量与数据类型分布]
-  • 总 Key 数: 857
-  • Key 后缀: .weight: 413 | .weight_scale: 202 | .comfy_quant: 202 | .bias: 38 | .(none): 2
-  • dtype: torch.float32: 453 | torch.int8: 202 | torch.uint8: 202
+  • 总 Key 数: 765
+  • Key 后缀: .weight: 121 | .weight_b0: 112 | .weight_b1: 112 | .weight_scale: 112 | .weight_zp: 112 | .comfy_quant: 112 | .scale: 80 | .(none): 4
+  • dtype: torch.uint8: 113 | torch.int32: 112 | torch.float16: 112 | torch.int8: 112 | torch.bfloat16: 89
+  • 标量元数据 {'torch.int32': 225, 'torch.uint8': 2} 已排除 (如 w4a4_group_size)
 
  [压缩比评估 (双解读分析)]
-  • 实际数据: 5.78 GB | 全 FP16 基准: ~11.47 GB
-  • 双解读: 50% (无偏/全宽)  vs  25% (若4bit打包)  [差异 25pt]
-  • 裁决: 50% (按最终类型 ComfyUI INT8 (int8_tensorwise) 选取)
+  • 实际数据: 4.91 GB | 全 FP16 基准: ~17.16 GB
+  • 压缩率: 29%
+  • 裁决: 29% (按最终类型 ComfyUI INT4 (tint4_torchao) 选取)
 
  [量化层与采样验证]
-  • 格式分布: INT8 tensorwise/per-row: 80 层
-  • 解包采样: context_refiner.0.attention.out.weight_scale
-      └─ 打包=False | 字节unique=255 | lo=16 hi=16
-  • 示例: context_refiner.0.attention.out.weight_scale
-      └─ weight 3840x3840 torch.int8, scale (3840, 1)
-  • comfy_quant: {"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}
+  • 格式分布: torchao int32 打包: 80 层
+  • 示例: double_blocks.0.img_attn.proj.weight_scale
+      └─ weight 4096x512 int32, scale (32, 4096)
+  • comfy_quant: {"format": "tint4_torchao", "per_block": true, "quarot": true, "group_size": 128}
 
 
 --------------------------------------------------------------------------------
  📋 【文件名审计】
 --------------------------------------------------------------------------------
  [原始文件名]
-  z_image_turbo_int8_convrot.safetensors
+  Flux.2-Klein-9B-Turbo_tint4_torchao.safetensors
 
  [逐段核验]
-  • 架构:   未知（文件名/文件均无架构线索）
-  • 参数量: 文件名未声明  →  文件 6.2B（补全）
-  • 量化/精度: 声称 int8_convrot  →  文件 ComfyUI-INT8  ✓ 一致
+  • 架构:   声称 Flux → 文件 Flux  ✓ 一致
+  • 参数量: 声称 9.0B → 文件 9.2B  ✓ 一致
+  • 量化/精度: 声称 tint4_torchao  →  文件 ComfyUI-INT4  ✓ 一致
 
  [标准化命名]
-  z_image_turbo-6.2B-ComfyUI-INT8
+  Flux.2-Klein-9B-Turbo-ComfyUI-INT4
   (身份段保留原样, 仅量化段按文件证据更正/补全)
 
 ================================================================================
  【终审结论】
 ================================================================================
-  [key] 含 weight_scale 伴生张量  (202 个)
-  [key] 含 comfy_quant 元数据  (202 个 → ComfyUI 量化协议)
-  [dtype] 存在 int8 张量  (202 个)
-  [压缩] 无偏50%/打包25%  (双解读差异大)
-  [结构] INT8 tensorwise  (80 层主导)
-  [元数据] comfy_quant.format=int8_tensorwise
+  [key] 含 weight_scale 伴生张量  (112 个)
+  [key] 含 comfy_quant 元数据  (112 个 → ComfyUI 量化协议)
+  [key] 含 weight_zp (zero-point)  (112 个)
+  [dtype] 存在 int8 张量  (112 个)
+  [dtype] 存在 int32 打包权重 (疑似 torchao)  (int32 weight + scale)
+  [dtype] 存在 bf16 (未量化层)  (89 个)
+  [压缩] 真 INT4 级  (29%)
+  [结构] torchao int32 打包  (80 层主导)
+  [元数据] comfy_quant.format=tint4_torchao
+  [元数据] group_size=128
+  [元数据] quarot 旋转
 --------------------------------------------------------------------------------
-  → 类型识别: ComfyUI INT8 (int8_tensorwise)
+  → 类型识别: ComfyUI INT4 (tint4_torchao)
   → 识别依据: comfy_quant 专有元数据 (ComfyUI 官方量化协议, 非 torchao)
-  → 典型加载: ComfyUI 原生加载 (QUANT_ALGOS 内置, 无需第三方节点)
-  → 结构要点: ComfyUI 原生 int8 量化 (QUANT_ALGOS 注册格式); 带 QuaRot 旋转 (convrot_groupsize=256); 量化层 80 层主导: INT8 tensorwise/per-row
+  → 典型加载: ComfyUI 原生 / TINT4 节点 (comfy_quant 协议)
+  → 结构要点: int32 打包 + weight_scale/zp 伴生 (TINT4/ComfyUI 协议); 量化层 80 层主导: torchao int32 打包
 ================================================================================
 ```
 

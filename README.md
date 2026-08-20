@@ -28,42 +28,90 @@ python check_model.py --lang en <path>        # force English output
 ## Sample Output
 
 ```
+
 ================================================================================
  📦 MFV Model Checker v1.1.0
 ================================================================================
- File: z_image_turbo_int8_convrot.safetensors
- Size: 5.78 GB
+ File: Flux.2-Klein-9B-Turbo_tint4_torchao.safetensors
+ Size: 4.91 GB
  Path: /path/to/models/
 
 --------------------------------------------------------------------------------
  💡 Quick Overview
 --------------------------------------------------------------------------------
-  • Type: ComfyUI INT8 (int8_tensorwise)
-  • Loader: ComfyUI native loader (built-in QUANT_ALGOS, no third-party nodes)
-  • VRAM ref: disk 5.78 GB (est.; ~50% saved vs full FP16)
+  • Type: ComfyUI INT4 (tint4_torchao)
+  • Loader: ComfyUI native / TINT4 nodes (comfy_quant protocol)
+  • VRAM ref: disk 4.91 GB (est.; ~71% saved vs full FP16)
 
 --------------------------------------------------------------------------------
  📊 Performance & Structure
 --------------------------------------------------------------------------------
-  • Raw equiv: ~11.47 GB (FP16 base)
-  • VRAM saving: ~50% ⏬ (standard full-width INT8, no packing)
-  • Quant protocol: comfy_quant (format: int8_tensorwise)
-  • Key algorithm: QuaRot rotation optimization (convrot_groupsize=256)
-  • Quant mechanism: QuaRot rotation removes outliers → channel-wise int8 fixed-point scaling
+  • Raw equiv: ~17.16 GB (FP16 base)
+  • VRAM saving: ~71% ⏬ (4-bit packing)
+  • Quant protocol: comfy_quant (format: tint4_torchao)
+  • Quant mechanism: int32 packing (8×4bit per int32) + channel-wise scaling
 
  [Activation Width (A) Derivation]
-  • Model metadata: comfy_quant.format=int8_tensorwise
+  • Model metadata: comfy_quant.format=tint4_torchao, per_block, quarot, gs=128
   • File suffix:   .safetensors
-  • Weight width W: 8 bit (int8 fixed-point)
-  • Activation width A: A8 primary, A16 optional   ⚠ engine-dependent, not file evidence
-...
+  • Weight width W: 4 bit
+  • Activation width A: A16 primary (ComfyUI default), A8 optional   ⚠ engine-dependent, not file evidence
+
+--------------------------------------------------------------------------------
+ 🔍 Deep Diagnosis
+--------------------------------------------------------------------------------
+ [Tensor & dtype Distribution]
+  • total keys: 765
+  • key suffixes: .weight: 121 | .weight_b0: 112 | .weight_b1: 112 | .weight_scale: 112 | .weight_zp: 112 | .comfy_quant: 112 | .scale: 80 | .(none): 4
+  • dtype: torch.uint8: 113 | torch.int32: 112 | torch.float16: 112 | torch.int8: 112 | torch.bfloat16: 89
+  • scalar metadata {'torch.int32': 225, 'torch.uint8': 2} excluded (e.g. w4a4_group_size)
+
+ [Compression Ratio (dual interpretation)]
+  • actual: 4.91 GB | full FP16 baseline: ~17.16 GB
+  • ratio: 29%
+  • verdict: 29% (by final type ComfyUI INT4 (tint4_torchao))
+
+ [Quantized Layers & Sample Verification]
+  • format distribution: torchao int32 packed: 80 layers
+  • example: double_blocks.0.img_attn.proj.weight_scale
+      └─ weight 4096x512 int32, scale (32, 4096)
+  • comfy_quant: {"format": "tint4_torchao", "per_block": true, "quarot": true, "group_size": 128}
+
+
+--------------------------------------------------------------------------------
+ 📋 Filename Audit
+--------------------------------------------------------------------------------
+ [Original Filename]
+  Flux.2-Klein-9B-Turbo_tint4_torchao.safetensors
+
+ [Per-Segment Verification]
+  • Arch:   claimed Flux -> file Flux  ✓ match
+  • Params: claimed 9.0B -> file 9.2B  ✓ match
+  • Quant/Precision: claimed tint4_torchao  →  file ComfyUI-INT4  ✓ match
+
+ [Standardized Naming]
+  Flux.2-Klein-9B-Turbo-ComfyUI-INT4
+  (identity segments kept as-is; only quant segment corrected/filled by file evidence)
+
 ================================================================================
  Final Verdict
 ================================================================================
-  → Type: ComfyUI INT8 (int8_tensorwise)
+  [key] weight_scale companion tensors  (112)
+  [key] comfy_quant metadata  (112 -> ComfyUI protocol)
+  [key] weight_zp (zero-point)  (112)
+  [dtype] int8 tensors present  (112)
+  [dtype] int32 packed weights (likely torchao)  (int32 weight + scale)
+  [dtype] bf16 (unquantized) present  (89)
+  [ratio] true INT4 level  (29%)
+  [structure] torchao int32 packed  (80 layers dominant)
+  [metadata] comfy_quant.format=tint4_torchao
+  [metadata] group_size=128
+  [metadata] quarot rotation
+--------------------------------------------------------------------------------
+  → Type: ComfyUI INT4 (tint4_torchao)
   → Basis: comfy_quant proprietary metadata (ComfyUI official protocol, not torchao)
-  → Loader: ComfyUI native loader (built-in QUANT_ALGOS, no third-party nodes)
-  → Structure: ComfyUI native int8 quantization (QUANT_ALGOS format); QuaRot rotation (convrot_groupsize=256); 80 layers dominant: INT8 tensorwise/per-row
+  → Loader: ComfyUI native / TINT4 nodes (comfy_quant protocol)
+  → Structure: int32 packed + weight_scale/zp companions (TINT4/ComfyUI protocol); quantized layers 80 layers dominant: torchao int32 packed
 ================================================================================
 ```
 
