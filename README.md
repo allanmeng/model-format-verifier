@@ -1,268 +1,203 @@
-# MFV — 模型格式验证工具（Model Format Verifier）
+# MFV — Model Format Verifier
 
-无偏、交叉验证的模型权重量化与打包格式逆向分析工具。
+Unbiased, cross-validated reverse-engineering tool for model weight quantization and packing formats.
 
-**不信任文件名、不信任元数据**——只以底层物理尺寸、张量结构和解包特征为硬证据，判定模型真实的量化格式与打包布局。
+**Trusts no filenames, trusts no metadata** — only physical sizes, tensor structures, and unpacking characteristics are hard evidence for determining a model's true quantization format and packing layout.
 
-## 特性
+> **中文版**：[README.zh-CN.md](README.zh-CN.md)
 
-- **多格式识别**：ComfyUI INT8/INT4/FP8/NF4、Packed INT4（group-wise / per-row 字节打包）、bitsandbytes NF4、torchao int32、GGUF 分块量化（Q2_K~Q8_K / IQ 系列）、未量化（FP16/BF16/FP8）
-- **证据驱动**：nibble 缺失模式 + 字节 unique 组合是打包判定的硬证据；协议归属以定义方源码注册表为准（如 ComfyUI `QUANT_ALGOS`），拒绝名称联想
-- **双层次输出**：💡 普通用户速览 / 📊 性能与结构评估 / 🔍 开发者深度诊断 / 终审结论，四区模板各取所需
-- **跨平台**：纯 Python + torch + safetensors，Windows / macOS / Linux 命令行直跑
+## Features
 
-## 快速开始
+- **Multi-format detection**: ComfyUI INT8/INT4/FP8/NF4, Packed INT4 (group-wise / per-row byte packing), bitsandbytes NF4, torchao int32, GGUF block quantization (Q2_K~Q8_K / IQ series), unquantized (FP16/BF16/FP8)
+- **Evidence-driven**: nibble-absence + byte-unique combination is the hard evidence for packing; protocol ownership verified against defining source registries (e.g. ComfyUI `QUANT_ALGOS`), never name-guessed
+- **5-zone output**: 💡 Quick Overview / 📊 Performance & Structure / 🔍 Deep Diagnosis / 📋 Filename Audit / Final Verdict — pick what you need
+- **Bilingual**: `--lang auto|zh|en` (default `auto`, follows system locale); terms stay English, framework text localizes
+- **Cross-platform**: pure Python + torch + safetensors, CLI on Windows/macOS/Linux
+
+## Quick Start
 
 ```bash
-# 安装依赖
 pip install torch safetensors
 
-# 单文件分析（safetensors 或 GGUF）
-python check_model.py <模型.safetensors>
-python check_model.py <模型.gguf>
-
-# 批量扫描目录
-python check_model.py <模型目录>
+python check_model.py <model.safetensors>     # single file
+python check_model.py <model.gguf>
+python check_model.py <model_dir>             # batch scan
+python check_model.py --lang en <path>        # force English output
 ```
 
-## 输出示例
+## Sample Output
 
 ```
 ================================================================================
- 📦 MFV 模型检查工具 v1.1.0
+ 📦 MFV Model Checker v1.1.0
 ================================================================================
- 文件: z_image_turbo_int8_convrot.safetensors
- 大小: 5.78 GB
- 路径: /path/to/models/
+ File: z_image_turbo_int8_convrot.safetensors
+ Size: 5.78 GB
+ Path: /path/to/models/
 
 --------------------------------------------------------------------------------
- 💡 【普通用户速览】
+ 💡 Quick Overview
 --------------------------------------------------------------------------------
-  • 模型类型: ComfyUI INT8 (int8_tensorwise)
-  • 典型加载: ComfyUI 原生加载 (QUANT_ALGOS 内置, 无需第三方节点)
-  • 显存参考: 磁盘 5.78 GB (估算; 相比全 FP16 约省 50%)
-
---------------------------------------------------------------------------------
- 📊 【性能与结构评估】
---------------------------------------------------------------------------------
-  • 原始等效: ~11.47 GB (FP16 基础)
-  • 显存节省: 约 50% ⏬ (标准全宽 INT8，无打包)
-  • 量化协议: comfy_quant (format: int8_tensorwise)
-  • 关键算法: QuaRot 旋转优化 (convrot_groupsize=256)
-  • 量化机制: QuaRot 旋转消除离群值 → 通道级 int8 定点缩放
-
-  [激活位宽 (A) 推导]
-  • 模型元数据: comfy_quant.format=int8_tensorwise
-  • 文件后缀:   .safetensors
-  • 权重位宽 W: 8 bit（int8 定点）
-  • 激活位宽 A: A8 为主, A16 可选   ⚠ 引擎相关, 非文件证据
+  • Type: ComfyUI INT8 (int8_tensorwise)
+  • Loader: ComfyUI native loader (built-in QUANT_ALGOS, no third-party nodes)
+  • VRAM ref: disk 5.78 GB (est.; ~50% saved vs full FP16)
 
 --------------------------------------------------------------------------------
- 🔍 【开发者深度诊断】
+ 📊 Performance & Structure
 --------------------------------------------------------------------------------
- [张量与数据类型分布]
-  • 总 Key 数: 857
-  • Key 后缀: .weight: 413 | .weight_scale: 202 | .comfy_quant: 202 | .bias: 38 | .(none): 2
-  • dtype: torch.float32: 453 | torch.int8: 202 | torch.uint8: 202
+  • Raw equiv: ~11.47 GB (FP16 base)
+  • VRAM saving: ~50% ⏬ (standard full-width INT8, no packing)
+  • Quant protocol: comfy_quant (format: int8_tensorwise)
+  • Key algorithm: QuaRot rotation optimization (convrot_groupsize=256)
+  • Quant mechanism: QuaRot rotation removes outliers → channel-wise int8 fixed-point scaling
 
- [压缩比评估 (双解读分析)]
-  • 实际数据: 5.78 GB | 全 FP16 基准: ~11.47 GB
-  • 双解读: 50% (无偏/全宽)  vs  25% (若4bit打包)  [差异 25pt]
-  • 裁决: 50% (按最终类型 ComfyUI INT8 (int8_tensorwise) 选取)
-
- [量化层与采样验证]
-  • 格式分布: INT8 tensorwise/per-row: 80 层
-  • 解包采样: context_refiner.0.attention.out.weight_scale
-      └─ 打包=False | 字节unique=255 | lo=16 hi=16
-  • 示例: context_refiner.0.attention.out.weight_scale
-      └─ weight 3840x3840 torch.int8, scale (3840, 1)
-  • comfy_quant: {"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}
-
-
---------------------------------------------------------------------------------
- 📋 【文件名审计】
---------------------------------------------------------------------------------
- [原始文件名]
-  z_image_turbo_int8_convrot.safetensors
-
- [逐段核验]
-  • 架构:   未知（文件名/文件均无架构线索）
-  • 参数量: 文件名未声明  →  文件 6.2B（补全）
-  • 量化/精度: 声称 int8_convrot  →  文件 ComfyUI-INT8  ✓ 一致
-
- [标准化命名]
-  z_image_turbo-6.2B-ComfyUI-INT8
-  (身份段保留原样, 仅量化段按文件证据更正/补全)
-
+ [Activation Width (A) Derivation]
+  • Model metadata: comfy_quant.format=int8_tensorwise
+  • File suffix:   .safetensors
+  • Weight width W: 8 bit (int8 fixed-point)
+  • Activation width A: A8 primary, A16 optional   ⚠ engine-dependent, not file evidence
+...
 ================================================================================
- 【终审结论】
+ Final Verdict
 ================================================================================
-  [key] 含 weight_scale 伴生张量  (202 个)
-  [key] 含 comfy_quant 元数据  (202 个 → ComfyUI 量化协议)
-  [dtype] 存在 int8 张量  (202 个)
-  [压缩] 无偏50%/打包25%  (双解读差异大)
-  [结构] INT8 tensorwise  (80 层主导)
-  [元数据] comfy_quant.format=int8_tensorwise
---------------------------------------------------------------------------------
-  → 类型识别: ComfyUI INT8 (int8_tensorwise)
-  → 识别依据: comfy_quant 专有元数据 (ComfyUI 官方量化协议, 非 torchao)
-  → 典型加载: ComfyUI 原生加载 (QUANT_ALGOS 内置, 无需第三方节点)
-  → 结构要点: ComfyUI 原生 int8 量化 (QUANT_ALGOS 注册格式); 带 QuaRot 旋转 (convrot_groupsize=256); 量化层 80 层主导: INT8 tensorwise/per-row
+  → Type: ComfyUI INT8 (int8_tensorwise)
+  → Basis: comfy_quant proprietary metadata (ComfyUI official protocol, not torchao)
+  → Loader: ComfyUI native loader (built-in QUANT_ALGOS, no third-party nodes)
+  → Structure: ComfyUI native int8 quantization (QUANT_ALGOS format); QuaRot rotation (convrot_groupsize=256); 80 layers dominant: INT8 tensorwise/per-row
 ================================================================================
 ```
 
-## 三种使用方式
+## Three Ways to Use
 
-### 1. 命令行（核心，跨平台）
+### 1. CLI (core, cross-platform)
 
 ```bash
-python check_model.py <路径>
+python check_model.py <path>
 ```
 
-适合所有平台，脚本即工具，零安装成本。
+### 2. AI Agent Skill (cross-agent)
 
-### 2. AI Agent 技能包（Skill，跨 agent 通用）
-
-本仓库自带 `skill/` 目录，是标准 **SKILL.md 技能包**（Anthropic Agent Skills 开放规范，Claude Code / Cursor / WorkBuddy 等主流 agent 均兼容），内含五步分析范式 + 案例库 + 参考实现。
-
-**通用安装方式一：skills.sh CLI（推荐）**
+The bundled `skill/` directory is a standard **SKILL.md package** (Anthropic Agent Skills open spec; compatible with Claude Code / Cursor / WorkBuddy etc.).
 
 ```bash
+# skills.sh CLI (cross-agent standard)
 npx skills add allanmeng/model-format-verifier@skill
+
+# or manual: copy skill/ into your agent's skills dir (~/.claude/skills, ~/.cursor/skills, ...)
 ```
 
-**通用安装方式二：手动放置**
+### 3. Windows Context Menu (two zero-dependency options)
 
-把 `skill/` 目录复制到所用 agent 的技能目录即可（不同 agent 路径不同，如 `~/.workbuddy/skills/`、`~/.claude/skills/`、`~/.cursor/skills/` 等），重启后自动识别。
-
-**通用安装方式三：ClawHub 社区市场**
-
-已发布到 [clawhub.ai](https://clawhub.ai) 后可一键安装。
-
-### 3. Windows 右键菜单（两种方案，零依赖）
-
-**方案 A：发送到（推荐）**
+**Option A: Send To**
 
 ```
 scripts\install_sendto.bat
 ```
 
-在系统 SendTo 目录创建快捷方式。之后右键 `.safetensors` / `.gguf` 文件 → **发送到 → Check Model** 检测；右键文件夹 → **发送到 → Scan Models** 批量扫描。
-
-**方案 B：经典右键菜单（菜单项直接出现）**
+**Option B: Classic context menu (direct menu items)**
 
 ```
-scripts\install_classic_reg.bat
+scripts\install_classic_reg.bat        # uninstall: ... uninstall
 ```
 
-注册 HKCU 用户级右键菜单：右键 `.safetensors` / `.gguf` 直接出现 **Check Model** 菜单项，右键文件夹出现 **Scan Models**（Windows 11 显示在「显示更多选项」中）。卸载：`install_classic_reg.bat uninstall`。
+Both coexist fine. The detection scripts have a CONFIG section at top (PYTHON path; leave empty to use PATH python).
 
-> 两个方案可同时安装，互不冲突。检测脚本顶部 CONFIG 区可配置 Python 路径（留空则使用系统 PATH 中的 python）。
-
-## 目录结构
+## Project Layout
 
 ```
 model-format-verifier/
-├── check_model.py           # 核心检测工具（权威源）
-├── skill/                   # WorkBuddy 技能包
-│   ├── SKILL.md             # 五步分析范式
+├── check_model.py           # core detector (authoritative source)
+├── skill/                   # agent skill package
+│   ├── SKILL.md             # 5-step analysis protocol
 │   ├── scripts/check_model.py
-│   └── references/          # 环境参考 + 案例库
+│   └── references/          # environment + case studies
 ├── scripts/
-│   ├── mfv_check.bat            # 检测脚本（CONFIG 参数化）
-│   ├── mfv_scan.bat             # 批量扫描脚本（CONFIG 参数化）
-│   ├── install_sendto.bat       # 集成方案 A：发送到
-│   └── install_classic_reg.bat  # 集成方案 B：经典右键菜单
-└── docs/                    # 开发上下文 / 格式覆盖地图
+│   ├── mfv_check.bat            # context-menu check (CONFIG-parameterized)
+│   ├── mfv_scan.bat             # context-menu batch scan
+│   ├── install_sendto.bat       # integration A: Send To
+│   └── install_classic_reg.bat  # integration B: classic context menu
+└── tests/
+    └── run_regression.py    # case-library regression assertions
 ```
 
-## 核心验证逻辑
+## Core Verification Logic
 
-**MFV（Model Format Verifier，模型格式验证）** 的核心验证逻辑源自 Model Format Verifier Protocol（模型格式验证协议）——一套"证据无偏 + 交叉验证"的逆向分析范式，下面对它做完整展开。
+**MFV (Model Format Verifier)** derives from the Model Format Verifier Protocol — an unbiased, cross-validated reverse-engineering paradigm.
 
-### 五条核心原则
+### Five Core Principles
 
-1. **证据无偏**：文件名、`w4a4_group_size`、`format` 字段都可能虚标，只以底层物理尺寸与解包特征为基准
-2. **源码溯源**：协议归属查定义方注册表（`comfy_quant` → ComfyUI `QUANT_ALGOS`，**非 torchao**），拒绝名称联想
-3. **严格区分力**：每个判据先问"能否排除竞争假设"，只保留硬判据，废弃无区分力特征
-4. **主导降级**：主导结构（采样层 >50%）定结论；证据不足则保守降级，宁可不报不可错报
-5. **闭环反馈**：以真实 Loader 运行时行为反查检测缺陷，修复保持插件无关
+1. **Unbiased evidence**: filenames, `w4a4_group_size`, `format` fields can all lie; only physical sizes and unpacking characteristics count
+2. **Source tracing**: protocol ownership verified against defining registries (`comfy_quant` → ComfyUI `QUANT_ALGOS`, **not** torchao)
+3. **Strict discriminative power**: each criterion must exclude competing hypotheses; only hard evidence survives (e.g. nibble-absence + byte-unique)
+4. **Dominance with degradation**: dominant structure (>50% sampled layers) decides; insufficient evidence → conservative "suspected/pending"
+5. **Loopback feedback**: real Loader runtime behavior exposes detection flaws; fixes stay plugin-agnostic
 
-### 五步分析工作流
+### 5-Step Workflow
 
 ```mermaid
 flowchart LR
-    A["Step 1 无偏采集<br/>文件大小 · dtype · scale 形状<br/>压缩比双解读"] --> B["Step 2 源码归属<br/>专有 key → QUANT_ALGOS 查证"]
-    B --> C["Step 3 交叉验证<br/>解包验证 · nibble 缺失<br/>形状自洽"]
-    C --> D["Step 4 主导推导<br/>判定分支 · 保守降级"]
-    D --> E["Step 5 闭环回馈<br/>Loader 反查缺陷"]
+    A["Step 1 Unbiased collection<br/>file size · dtype · scale shapes<br/>dual-interpretation ratio"] --> B["Step 2 Source tracing<br/>proprietary keys → QUANT_ALGOS"]
+    B --> C["Step 3 Cross-validation<br/>unpack verification · nibble absence<br/>shape self-consistency"]
+    C --> D["Step 4 Dominance deduction<br/>judgment branches · conservative fallback"]
+    D --> E["Step 5 Loopback<br/>Loader runtime re-check"]
     E -.-> A
 ```
 
-### 硬判据：nibble 缺失与字节 unique
+### Hard Criterion: Nibble Absence & Byte Unique
 
-4bit 打包的本质是「每字节装两个 4bit 值」，会在字节层面留下不可伪造的痕迹：
+4-bit packing = "two 4-bit values per byte", leaving unforgeable byte-level traces:
 
 ```mermaid
 flowchart TD
-    subgraph S1["全宽 int8"]
-        A1["字节 unique ≈ 255<br/>lo = 16 全覆盖 · hi = 16 全覆盖"]
+    subgraph S1["Full-width int8"]
+        A1["byte unique ≈ 255<br/>lo = 16 full · hi = 16 full"]
     end
-    subgraph S2["真 4bit 打包"]
-        B1["字节 unique = lo_u × hi_u<br/>（如 15×15 = 225）<br/>lo/hi 必有缺失（<16）"]
+    subgraph S2["True 4-bit packing"]
+        B1["byte unique = lo_u × hi_u<br/>(e.g. 15×15 = 225)<br/>lo/hi must miss (<16)"]
     end
-    A1 --> Y["判定：全宽 INT8"]
-    B1 --> Z["判定：Packed INT4"]
-    A1 -. "解包值域 ∈[-8,7] 无区分力 ❌" .-> X["任何字节拆 nibble 都成立"]
-    B1 -. "解包值域 ∈[-8,7] 无区分力 ❌" .-> X
+    A1 --> Y["Verdict: full-width INT8"]
+    B1 --> Z["Verdict: Packed INT4"]
 ```
 
-### 判定决策树
+### Decision Tree
 
 ```mermaid
 flowchart TD
-    M["模型张量分析"] --> N1{"bitsandbytes__nf4<br/>quant_state 标记?"}
-    N1 -- 是 --> R1["NF4 (bitsandbytes)"]
-    N1 -- 否 --> N2{"comfy_quant 元数据?"}
-    N2 -- 是 --> N3{"format 关键词?"}
+    M["Tensor analysis"] --> N1{"bitsandbytes__nf4<br/>quant_state marker?"}
+    N1 -- yes --> R1["NF4 (bitsandbytes)"]
+    N1 -- no --> N2{"comfy_quant metadata?"}
+    N2 -- yes --> N3{"format keyword?"}
     N3 -- int8 --> R2["ComfyUI INT8"]
     N3 -- int4/tint4 --> R3["ComfyUI INT4"]
     N3 -- fp8 --> R4["ComfyUI FP8"]
-    N3 -- nf4 --> R5["NF4 (ComfyUI)"]
-    N2 -- 否 --> N4{"int8/uint8 权重<br/>+ 伴生 scale?"}
-    N4 -- "解包=4bit + 2D scale" --> R6["Packed INT4 group-wise"]
-    N4 -- "解包=4bit + 1D scale" --> R7["Packed INT4 per-row"]
-    N4 -- "全宽 + gs 虚标" --> R8["伪 W4A4 (Group-wise INT8)"]
-    N4 -- "全宽 + 无虚标" --> R9["INT8 全宽"]
-    N4 -- "无伴生 + 压缩比高" --> R10["接近未量化"]
+    N2 -- no --> N4{"int8/uint8 weights<br/>+ companion scale?"}
+    N4 -- "unpack=4bit + 2D scale" --> R5["Packed INT4 group-wise"]
+    N4 -- "unpack=4bit + 1D scale" --> R6["Packed INT4 per-row"]
+    N4 -- "full + gs mislabeled" --> R7["Fake W4A4 (Group-wise INT8)"]
+    N4 -- "full, no mislabel" --> R8["Full-width INT8"]
+    N4 -- "no companion + high ratio" --> R9["Near-unquantized"]
 ```
 
-### 三类格式的检测路径
+- Conservative rule: insufficient evidence → "suspected/pending"; better to say nothing than to guess wrong.
 
-| 格式家族 | 识别入口 | 关键判据 | 特殊处理 |
-|---------|---------|---------|---------|
-| safetensors 量化 | `weight_scale` / `comfy_quant` 等后缀 | 解包验证 + 形状自洽 | nibble 硬判据 |
-| bitsandbytes NF4 | `absmax` + `quant_map` + `bitsandbytes__nf4` | quant_state 标记（决定性） | 不走解包验证（码本索引体系） |
-| GGUF 分块量化 | 文件签名 `GGUF` | 类型分布按权重元素占比 | 纯 struct 解析，不读数据区 |
+## Case Studies
 
-- 保守原则：证据不足时输出"疑似/待确认"，宁可不报不可错报
+| Model | Claimed | Actual | Flaw exposed |
+|-------|---------|--------|--------------|
+| kr2fp_wa4 | filename wa4 | Packed INT4 | dead-branch misjudgment |
+| krea2_turbo-int8_convrot | filename int8 | INT4 per-row packed | filename untrustworthy |
+| z_image_turbo_int8_convrot | comfy_quant | ComfyUI INT8 | ownership misjudged as torchao |
+| z_image_turbo_nf4_v2 | filename nf4 | NF4 (bitsandbytes) | bnb system missed |
+| qwen_3_4b_fp4_flux2 | filename fp4 | FP8 (float8_e4m3fn) | float8 format unrecognized |
+| Huihui-Qwen3VL-int8_mixed | filename int8 | INT4 per-row packed | filename int8 again misleading |
 
-## 案例库
+Full details in `skill/references/case-studies.md`.
 
-| 模型 | 表象 | 真实结论 | 暴露的漏洞 |
-|------|------|---------|-----------|
-| kr2fp_wa4 | 文件名 wa4 | Packed INT4 | 死分支误判 |
-| krea2_turbo-int8_convrot | 文件名 int8 | INT4 per-row 打包 | 文件名不可信 |
-| z_image_turbo_int8_convrot | comfy_quant | ComfyUI INT8 | 归属误判 torchao |
-| z_image_turbo_nf4_v2 | 文件名 nf4 | NF4 (bitsandbytes) | 漏判 bnb 体系 |
-
-详见 `skill/references/case-studies.md`。
-
-## 许可证
+## License
 
 MIT
 
-## 贡献
+## Contributing
 
-- 权威源：根目录 `check_model.py`（唯一升级对象）
-- 新格式支持遵循"反例驱动"：遇到误判/漏判 → 提供模型特征 → 补充判据 → 沉淀案例
+- Authoritative source: root `check_model.py` (single upgrade target)
+- New formats follow "counter-example driven": misdetection → model evidence → new criterion → case study

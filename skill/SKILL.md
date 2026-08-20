@@ -1,6 +1,6 @@
 ---
 name: model-format-verifier-protocol
-description: "模型权重量化与打包格式的无偏逆向分析范式 (MFV)。用于判断 safetensors 模型的量化格式（TorchAO/ComfyUI INT4-INT8/NF4/Packed INT4/nunchaku/GPTQ/AWQ/FP8/GGUF 等）：元数据归属查证、解包验证、nibble 缺失判据、主导格式降级、Loader 反查漏洞。触发场景：模型检测、check_model、量化格式识别、判断模型能否用某加载器、逆向分析模型结构、w4a4/int8/int4/tint4/tensorwise/convrot 等格式分析。"
+description: "模型权重量化与打包格式的无偏逆向分析范式 (MFV)。用于判断 safetensors 模型的量化格式（TorchAO/ComfyUI INT4-INT8/NF4/Packed INT4/nunchaku/GPTQ/AWQ/FP8/GGUF 等）：元数据归属查证、解包验证、nibble 缺失判据、主导格式降级、Loader 反查漏洞。触发场景：模型检测、check_model、量化格式识别、判断模型能否用某加载器、逆向分析模型结构、w4a4/int8/int4/tint4/tensorwise/convrot 等格式分析。English: Unbiased reverse-engineering of model weight quantization/packing formats (MFV) - detect quantized format of safetensors/GGUF models (ComfyUI INT4-INT8, TorchAO, NF4, Packed INT4, nunchaku, GPTQ, AWQ, FP8, GGUF, etc.): metadata provenance, unpack verification, nibble-absence criterion, dominance fallback, Loader loopback. Triggers: model format detection, check_model, quant format identification, model structure analysis, w4a4/int8/int4/tint4/tensorwise/convrot."
 ---
 
 # Model Format Verifier Protocol (MFV)

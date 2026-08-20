@@ -46,6 +46,136 @@ __version__ = "1.1.0"
 BANNER = "=" * 80
 SECTION = "-" * 80
 
+
+# ==================== 本地化 (i18n) ====================
+def _detect_lang():
+    """--lang auto|zh|en; 默认 auto 按系统 locale 选择"""
+    for i, a in enumerate(sys.argv):
+        if a == "--lang" and i + 1 < len(sys.argv):
+            v = sys.argv[i + 1].lower()
+            if v in ("zh", "en"):
+                return v
+    loc = ""
+    try:
+        import locale
+        loc = (locale.getlocale() or ("", ""))[0] or ""
+        if not loc:
+            enc = (locale.getpreferredencoding(False) or "").lower()
+            return "zh" if enc in ("cp936", "gbk", "gb2312", "gb18030") else "en"
+    except Exception:
+        loc = ""
+    if not loc:
+        loc = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
+    loc_l = loc.lower()
+    # Windows locale 名如 "Chinese (Simplified)_China" 不以 zh 开头
+    return "zh" if (loc_l.startswith("zh") or "chinese" in loc_l or "prc" in loc_l) else "en"
+
+
+LANG = _detect_lang()
+
+# 文案字典: key → (中文, English)
+_T = {
+    # 板块标题
+    "sec_quick": ("💡 【普通用户速览】", "💡 Quick Overview"),
+    "sec_perf": ("📊 【性能与结构评估】", "📊 Performance & Structure"),
+    "sec_diag": ("🔍 【开发者深度诊断】", "🔍 Deep Diagnosis"),
+    "sec_audit": ("📋 【文件名审计】", "📋 Filename Audit"),
+    "sec_final": ("【终审结论】", "Final Verdict"),
+    # 子块标题
+    "sub_activation": ("[激活位宽 (A) 推导]", "[Activation Width (A) Derivation]"),
+    "sub_tensor": ("[张量与数据类型分布]", "[Tensor & dtype Distribution]"),
+    "sub_ratio": ("[压缩比评估 (双解读分析)]", "[Compression Ratio (dual interpretation)]"),
+    "sub_sample": ("[量化层与采样验证]", "[Quantized Layers & Sample Verification]"),
+    "sub_orig": ("[原始文件名]", "[Original Filename]"),
+    "sub_check": ("[逐段核验]", "[Per-Segment Verification]"),
+    "sub_stdname": ("[标准化命名]", "[Standardized Naming]"),
+    # 字段标签
+    "f_type": ("模型类型", "Type"),
+    "f_load": ("典型加载", "Loader"),
+    "f_vram": ("显存参考", "VRAM ref"),
+    "f_raw": ("原始等效", "Raw equiv"),
+    "f_save": ("显存节省", "VRAM saving"),
+    "f_proto": ("量化协议", "Quant protocol"),
+    "f_algo": ("关键算法", "Key algorithm"),
+    "f_mech": ("量化机制", "Quant mechanism"),
+    "f_meta": ("模型元数据", "Model metadata"),
+    "f_suffix": ("文件后缀", "File suffix"),
+    "f_w": ("权重位宽 W", "Weight width W"),
+    "f_a": ("激活位宽 A", "Activation width A"),
+    "f_arch": ("架构", "Arch"),
+    "f_params": ("参数量", "Params"),
+    "f_quant": ("量化/精度", "Quant/Precision"),
+    # 状态词
+    "s_claimed": ("声称", "claimed"),
+    "s_file": ("文件", "file"),
+    "s_ok": ("✓ 一致", "✓ match"),
+    "s_bad": ("✗ 声称不符", "✗ mismatch"),
+    "s_bad2": ("✗ 不符", "✗ mismatch"),
+    "s_undecl": ("文件名未声明", "not declared in name"),
+    "s_fill": ("补全", "filled"),
+    "s_unknown": ("未知", "unknown"),
+    "s_unverif": ("未校验", "unverified"),
+    "s_infer": ("推断", "inferred"),
+    "s_engine": ("⚠ 引擎相关, 非文件证据", "⚠ engine-dependent, not file evidence"),
+    "s_base_fp16": ("(FP16 基础)", "(FP16 base)"),
+    "s_est": ("估算", "est."),
+    "s_disk": ("磁盘", "disk"),
+    "s_keep_ident": ("(身份段保留原样, 仅量化段按文件证据更正/补全)",
+                     "(identity segments kept as-is; only quant segment corrected/filled by file evidence)"),
+    # 终审判据行
+    "v_weight_scale": ("含 weight_scale 伴生张量", "weight_scale companion tensors"),
+    "v_comfy_quant": ("含 comfy_quant 元数据", "comfy_quant metadata"),
+    "v_nf4": ("含 bitsandbytes__nf4 标记", "bitsandbytes__nf4 markers"),
+    "v_bnb": ("含 bnb 量化伴生", "bnb quant companions"),
+    "v_zp": ("含 weight_zp (zero-point)", "weight_zp (zero-point)"),
+    "v_int8": ("存在 int8 张量", "int8 tensors present"),
+    "v_int32": ("存在 int32 打包权重", "int32 packed weights"),
+    "v_bf16": ("存在 bf16 (未量化层)", "bf16 (unquantized) present"),
+    "v_ratio": ("压缩比", "ratio"),
+    "v_struct": ("结构", "structure"),
+    "v_meta": ("元数据", "metadata"),
+    "v_true4": ("真 INT4 级", "true INT4 level"),
+    "v_dual": ("双解读差异大", "large dual-interpretation gap"),
+    # 终审行
+    "f_type_id": ("类型识别", "Type"),
+    "f_basis": ("识别依据", "Basis"),
+    "f_load_advice": ("典型加载", "Loader"),
+    "f_struct_pt": ("结构要点", "Structure"),
+    # 其他
+    "batch_summary": ("【批量扫描汇总】", "Batch Scan Summary"),
+    "no_files": ("未找到 .safetensors / .gguf 文件", "No .safetensors / .gguf files found"),
+    "unk_arch": ("未知（文件名/文件均无架构线索）", "unknown (no arch clue in name or file)"),
+    # 量化机制 (m_*)
+    "m_nf4": ("归一化 4bit：16 值非线性码本 + 块级 absmax 缩放",
+              "Normalized 4-bit: 16-value non-linear codebook + block-wise absmax scaling"),
+    "m_int8_convrot": ("QuaRot 旋转消除离群值 → 通道级 int8 定点缩放",
+                       "QuaRot rotation removes outliers → channel-wise int8 fixed-point scaling"),
+    "m_int8": ("通道级/tensorwise int8 定点缩放", "Channel/tensor-wise int8 fixed-point scaling"),
+    "m_tint4": ("int32 打包（每 int32 装 8×4bit）+ 通道级缩放",
+                "int32 packing (8×4bit per int32) + channel-wise scaling"),
+    "m_fp8": ("8-bit 浮点（e4m3/e5m2 指数尾数分配）",
+              "8-bit float (e4m3/e5m2 exponent-mantissa split)"),
+    "m_packed_gw": ("字节打包：每字节 2×4bit，group-wise 缩放",
+                    "Byte packing: 2×4bit per byte, group-wise scaling"),
+    "m_packed_row": ("字节打包：每字节 2×4bit，per-row 缩放",
+                     "Byte packing: 2×4bit per byte, per-row scaling"),
+    "m_torchao": ("affine int32 打包（每 int32 装 8×4bit）",
+                  "Affine int32 packing (8×4bit per int32)"),
+    "m_asym": ("zero-point 非对称量化（int32 打包）",
+               "Zero-point asymmetric quantization (int32 packing)"),
+    "m_gw_int8": ("group-wise int8 定点（组共享 scale）",
+                  "Group-wise int8 fixed-point (group-shared scale)"),
+    "m_unquant": ("无压缩（原生 fp16/bf16 精度）", "Uncompressed (native fp16/bf16)"),
+    "m_mixed": ("部分层量化（量化层 + 原生精度层混合）",
+                "Partial quantization (quantized + native layers mixed)"),
+}
+
+
+def _l(key):
+    """取当前语言的文案"""
+    return _T[key][1] if LANG == "en" else _T[key][0]
+
+
 COMMON_GROUP_SIZES = {16, 32, 64, 128, 256, 512}
 
 
@@ -53,46 +183,108 @@ def print_file_head(fsize, path):
     """文件头部横幅 + 基本信息"""
     print()
     print(BANNER)
-    print(f" 📦 MFV 模型检查工具 v{__version__}")
+    if LANG == "en":
+        print(f" 📦 MFV Model Checker v{__version__}")
+    else:
+        print(f" 📦 MFV 模型检查工具 v{__version__}")
     print(BANNER)
-    print(f" 文件: {os.path.basename(path)}")
-    print(f" 大小: {fsize:.2f} GB")
-    print(f" 路径: {os.path.dirname(path) or os.getcwd()}")
+    if LANG == "en":
+        print(f" File: {os.path.basename(path)}")
+        print(f" Size: {fsize:.2f} GB")
+        print(f" Path: {os.path.dirname(path) or os.getcwd()}")
+    else:
+        print(f" 文件: {os.path.basename(path)}")
+        print(f" 大小: {fsize:.2f} GB")
+        print(f" 路径: {os.path.dirname(path) or os.getcwd()}")
+
+
+def _type_en(type_str):
+    """类型识别文案 → 英文 (术语保留; 纯中文描述翻译)"""
+    t = type_str
+    pairs = (
+        ("接近未量化 (fp16 为主)", "near-unquantized (fp16 dominant)"),
+        ("接近未量化 (bf16 为主)", "near-unquantized (bf16 dominant)"),
+        ("接近未量化", "near-unquantized"),
+        ("混合精度", "mixed precision"),
+        ("非对称 INT4", "asymmetric INT4"),
+        ("伪 W4A4 (Group-wise INT8)", "fake W4A4 (Group-wise INT8)"),
+        ("torchao int32 打包", "torchao int32 packed"),
+        ("分块量化", "block-quantized"),
+        ("量化", "quantized"),
+        ("主导", "dominant"),
+        ("打包 (无 group_size)", "packed (no group_size)"),
+        ("打包", "packed"),
+        ("无 group_size", "no group_size"),
+        ("风格", "-style"),
+    )
+    for zh, en in pairs:
+        t = t.replace(zh, en)
+    return t
+
+
+def _load_en(load):
+    """加载建议文案 → 英文"""
+    t = load
+    pairs = (
+        ("ComfyUI 原生加载 (QUANT_ALGOS 内置, 无需第三方节点)",
+         "ComfyUI native loader (built-in QUANT_ALGOS, no third-party nodes)"),
+        ("ComfyUI 原生 / TINT4 节点 (comfy_quant 协议)",
+         "ComfyUI native / TINT4 nodes (comfy_quant protocol)"),
+        ("bitsandbytes NF4 加载器 (bnb 原生, 非 ComfyUI 协议)",
+         "bitsandbytes NF4 loader (bnb native, not ComfyUI protocol)"),
+        ("llama.cpp 系 (ollama / llama-server / GGUF 原生)",
+         "llama.cpp family (ollama / llama-server / GGUF native)"),
+        ("标准 fp16/bf16 加载器", "standard fp16/bf16 loader"),
+        ("支持字节打包 INT4 的后端 (如 nunchaku 系)",
+         "backend supporting byte-packed INT4 (e.g. nunchaku)"),
+        ("支持 per-row INT4 打包的后端 (非标准 nunchaku 布局)",
+         "backend supporting per-row INT4 packing (non-standard nunchaku layout)"),
+        ("原生精度加载 (fp16/bf16)", "native precision loader (fp16/bf16)"),
+    )
+    for zh, en in pairs:
+        t = t.replace(zh, en)
+    return t
 
 
 def print_sec_quick(type_str, load_advice, fsize, ratio=None):
     """💡 普通用户速览区"""
     print()
     print(SECTION)
-    print(" 💡 【普通用户速览】")
+    print(" " + _l("sec_quick"))
     print(SECTION)
-    print(f"  • 模型类型: {type_str}")
+    print(f"  • {_l('f_type')}: {_type_en(type_str) if LANG == 'en' else type_str}")
     if load_advice:
-        print(f"  • 典型加载: {load_advice}")
+        print(f"  • {_l('f_load')}: {_load_en(load_advice) if LANG == 'en' else load_advice}")
     if ratio is not None:
-        print(f"  • 显存参考: 磁盘 {fsize:.2f} GB (估算; 相比全 FP16 约省 {100 - ratio:.0f}%)")
+        if LANG == "en":
+            print(f"  • {_l('f_vram')}: disk {fsize:.2f} GB (est.; ~{100 - ratio:.0f}% saved vs full FP16)")
+        else:
+            print(f"  • {_l('f_vram')}: 磁盘 {fsize:.2f} GB (估算; 相比全 FP16 约省 {100 - ratio:.0f}%)")
     else:
-        print(f"  • 显存参考: 磁盘 {fsize:.2f} GB (估算, 推理占用视引擎而定)")
+        if LANG == "en":
+            print(f"  • {_l('f_vram')}: disk {fsize:.2f} GB (est., runtime VRAM depends on engine)")
+        else:
+            print(f"  • {_l('f_vram')}: 磁盘 {fsize:.2f} GB (估算, 推理占用视引擎而定)")
 
 
 def print_sec_perf(fp16_gb, final_ratio, protocol, algo, save_note, mechanism=""):
     """📊 性能与结构评估区 (介于速览与深度诊断之间)"""
     print()
     print(SECTION)
-    print(" 📊 【性能与结构评估】")
+    print(" " + _l("sec_perf"))
     print(SECTION)
-    print(f"  • 原始等效: ~{fp16_gb:.2f} GB (FP16 基础)")
+    print(f"  • {_l('f_raw')}: ~{fp16_gb:.2f} GB {_l('s_base_fp16')}")
     if final_ratio is not None:
         save_pct = 100 - final_ratio
         if save_pct > 0.5:  # 阈值防浮点噪声 (-0% / 0.01%)
-            print(f"  • 显存节省: 约 {save_pct:.0f}% ⏬ ({save_note})")
+            print(f"  • {_l('f_save')}: ~{save_pct:.0f}% ⏬ ({save_note})")
         else:
-            print(f"  • 显存节省: 约 0% ({save_note})")
-    print(f"  • 量化协议: {protocol}")
+            print(f"  • {_l('f_save')}: ~0% ({save_note})")
+    print(f"  • {_l('f_proto')}: {protocol}")
     if algo:
-        print(f"  • 关键算法: {algo}")
+        print(f"  • {_l('f_algo')}: {algo}")
     if mechanism:
-        print(f"  • 量化机制: {mechanism}")
+        print(f"  • {_l('f_mech')}: {mechanism}")
 
 
 def _quant_mechanism(type_str, comfy_quant_info=None):
@@ -100,38 +292,38 @@ def _quant_mechanism(type_str, comfy_quant_info=None):
     tl = type_str.lower()
     fl = ((comfy_quant_info or {}).get("format", "") or "").lower()
     if "nf4" in tl and "bitsandbytes" in tl:
-        return "归一化 4bit：16 值非线性码本 + 块级 absmax 缩放"
+        return _l("m_nf4")
     if "comfyui int8" in tl or "int8" in fl:
         if comfy_quant_info and comfy_quant_info.get("convrot"):
-            return "QuaRot 旋转消除离群值 → 通道级 int8 定点缩放"
-        return "通道级/tensorwise int8 定点缩放"
+            return _l("m_int8_convrot")
+        return _l("m_int8")
     if "comfyui int4" in tl or "tint4" in fl:
-        return "int32 打包（每 int32 装 8×4bit）+ 通道级缩放"
+        return _l("m_tint4")
     if ("fp8" in fl or "float8" in fl):
-        return "8-bit 浮点（e4m3/e5m2 指数尾数分配）"
+        return _l("m_fp8")
     if "packed int4" in tl:
-        return "字节打包：每字节 2×4bit，group-wise 缩放" if "group-wise" in tl else "字节打包：每字节 2×4bit，per-row 缩放"
+        return _l("m_packed_gw") if "group-wise" in tl else _l("m_packed_row")
     if "torchao" in tl:
-        return "affine int32 打包（每 int32 装 8×4bit）"
+        return _l("m_torchao")
     if "非对称" in tl:
-        return "zero-point 非对称量化（int32 打包）"
+        return _l("m_asym")
     if "group-wise int8" in tl:
-        return "group-wise int8 定点（组共享 scale）"
+        return _l("m_gw_int8")
     if "接近未量化" in tl:
-        return "无压缩（原生 fp16/bf16 精度）"
+        return _l("m_unquant")
     if "混合精度" in tl:
-        return "部分层量化（量化层 + 原生精度层混合）"
+        return _l("m_mixed")
     return ""
 
 
 def _print_activation_block(meta, suffix, w, a):
     """📊 区内的「激活位宽 (A) 推导」块: 证据链(元数据→后缀→W→A)"""
     print()
-    print("  [激活位宽 (A) 推导]")
-    print(f"  • 模型元数据: {meta}")
-    print(f"  • 文件后缀:   {suffix}")
-    print(f"  • 权重位宽 W: {w}")
-    print(f"  • 激活位宽 A: {a}   ⚠ 引擎相关, 非文件证据")
+    print(" " + _l("sub_activation"))
+    print(f"  • {_l('f_meta')}: {meta}")
+    print(f"  • {_l('f_suffix')}:   {suffix}")
+    print(f"  • {_l('f_w')}: {w}")
+    print(f"  • {_l('f_a')}: {a}   {_l('s_engine')}")
 
 
 def _activation_derive_safetensors(sd, type_str, comfy_quant_info):
@@ -140,6 +332,7 @@ def _activation_derive_safetensors(sd, type_str, comfy_quant_info):
     W 从文件结构推导(非文件名); A 是 W×引擎族的候选参考(非文件证据)。
     """
     tl = type_str.lower()
+    en = LANG == "en"
     # --- 模型元数据 ---
     if comfy_quant_info:
         parts = [f"comfy_quant.format={comfy_quant_info.get('format', '?')}"]
@@ -152,42 +345,43 @@ def _activation_derive_safetensors(sd, type_str, comfy_quant_info):
         meta = ", ".join(parts)
     elif "bitsandbytes" in tl:
         n = sum(1 for k in sd if k.endswith(".bitsandbytes__nf4"))
-        meta = f"bitsandbytes__nf4 ({n} 组)"
+        meta = f"bitsandbytes__nf4 ({n} " + ("groups)" if en else "组)") 
     else:
-        meta = "无专有量化元数据"
+        meta = "no proprietary quant metadata" if en else "无专有量化元数据"
     # --- 权重位宽 W (从文件结构推导) ---
     if "int4" in tl or "packed int4" in tl or "torchao" in tl or "非对称" in tl:
         w = "4 bit"
     elif "nf4" in tl:
-        w = "4 bit（uint8 打包 2×4bit）"
+        w = "4 bit (uint8 packed 2×4bit)" if en else "4 bit（uint8 打包 2×4bit）"
     elif ("fp8" in tl or "float8" in tl):
-        w = "8 bit（FP8 浮点）"
+        w = "8 bit (FP8 float)" if en else "8 bit（FP8 浮点）"
     elif "int8" in tl or "group-wise" in tl:
-        w = "8 bit（int8 定点）"
+        w = "8 bit (int8 fixed-point)" if en else "8 bit（int8 定点）"
     elif "接近未量化" in tl:
-        w = "16 bit（原生 fp16/bf16）"
+        w = "16 bit (native fp16/bf16)" if en else "16 bit（原生 fp16/bf16）"
     elif "混合精度" in tl:
-        w = "混合（量化层 + 原生层）"
+        w = "mixed (quantized + native)" if en else "混合（量化层 + 原生层）"
     else:
-        w = "待定"
+        w = "pending" if en else "待定"
     # --- 激活位宽 A (W×引擎族候选, 非文件证据) ---
     has_svdq = any("svdq" in k.lower() or "lora_" in k.lower() for k in sd)
     if has_svdq and "int4" in tl:
-        a = "A4（设计锁定, 全 4bit 推理）"
+        a = "A4 (design-locked, full 4-bit)" if en else "A4（设计锁定, 全 4bit 推理）"
     elif ("fp8" in tl or "float8" in tl):
-        a = "A8-FP8 为主（硬件配套）, A16 可选"
+        a = "A8-FP8 primary (HW), A16 optional" if en else "A8-FP8 为主（硬件配套）, A16 可选"
     elif "int8" in tl or "group-wise" in tl:
-        a = "A8 为主, A16 可选"
+        a = "A8 primary, A16 optional" if en else "A8 为主, A16 可选"
     elif "nf4" in tl:
-        a = "A16 为主, A8 可选"
+        a = "A16 primary, A8 optional" if en else "A16 为主, A8 可选"
     elif "int4" in tl or "torchao" in tl or "非对称" in tl:
-        a = "A16 为主（ComfyUI 默认）, A8 可选" if comfy_quant_info else "A16 为主, A8 可选"
+        a = ("A16 primary (ComfyUI default), A8 optional" if en else "A16 为主（ComfyUI 默认）, A8 可选") \
+            if comfy_quant_info else ("A16 primary, A8 optional" if en else "A16 为主, A8 可选")
     elif "接近未量化" in tl:
-        a = "A16（无激活量化）"
+        a = "A16 (no activation quant)" if en else "A16（无激活量化）"
     elif "混合精度" in tl:
-        a = "视量化层而定"
+        a = "depends on quantized layers" if en else "视量化层而定"
     else:
-        a = "待定"
+        a = "pending" if en else "待定"
     return meta, w, a
 
 
@@ -293,26 +487,29 @@ def _print_audit(filename, ident, quant_claimed, std_quant, arch_s, params_s, su
     """📋 文件名审计板块: 原始文件名 → 逐段核验 → 标准化命名"""
     print()
     print(SECTION)
-    print(" 📋 【文件名审计】")
+    print(" " + _l("sec_audit"))
     print(SECTION)
-    print(" [原始文件名]")
+    print(" " + _l("sub_orig"))
     print(f"  {filename}")
     print()
-    print(" [逐段核验]")
-    print(f"  • 架构:   {arch_s}")
-    print(f"  • 参数量: {params_s}")
+    print(" " + _l("sub_check"))
+    print(f"  • {_l('f_arch')}:   {arch_s}")
+    print(f"  • {_l('f_params')}: {params_s}")
     if quant_claimed:
         claimed_l = quant_claimed.lower()
         ok = any(t in claimed_l for t in (std_quant.lower().replace("-", ""),)) or \
              any(t in claimed_l for t in _quant_synonyms(std_quant))
-        mark = "✓ 一致" if ok else "✗ 声称不符"
-        print(f"  • 量化/精度: 声称 {quant_claimed}  →  文件 {std_quant}  {mark}")
+        mark = _l("s_ok") if ok else _l("s_bad")
+        print(f"  • {_l('f_quant')}: {_l('s_claimed')} {quant_claimed}  →  {_l('s_file')} {std_quant}  {mark}")
     else:
-        print(f"  • 量化/精度: 文件名未声明  →  文件 {std_quant}（补全）")
+        if LANG == "en":
+            print(f"  • {_l('f_quant')}: {_l('s_undecl')}  →  file {std_quant} ({_l('s_fill')})")
+        else:
+            print(f"  • {_l('f_quant')}: {_l('s_undecl')}  →  文件 {std_quant}（{_l('s_fill')}）")
     print()
-    print(" [标准化命名]")
+    print(" " + _l("sub_stdname"))
     print(f"  {suggest}")
-    print("  (身份段保留原样, 仅量化段按文件证据更正/补全)")
+    print("  " + _l("s_keep_ident"))
 
 
 def _quant_synonyms(std_quant):
@@ -346,20 +543,28 @@ def _arch_family(name):
 def _run_audit(fname, ident, quant_claimed, std_quant, arch_claimed, arch_file, total_elems):
     """执行文件名审计: 架构/参数量/量化逐段核验 + 生成标准化命名, 渲染📋板块"""
     import re
+    en = LANG == "en"
+    arrow = " → " if not en else " -> "
     # --- 架构核验 ---
     if arch_file and arch_claimed:
         cf, ff = _arch_family(arch_claimed), _arch_family(arch_file)
         ok = cf and ff and (cf == ff or cf in ff or ff in cf)
         if ok:
-            arch_s = f"声称 {arch_claimed}  →  文件 {arch_file}  ✓ 一致"
+            arch_s = f"{_l('s_claimed')} {arch_claimed}{arrow}{_l('s_file')} {arch_file}  {_l('s_ok')}"
         else:
-            arch_s = f"声称 {arch_claimed}  →  文件 {arch_file}  ✗ 不符"
+            arch_s = f"{_l('s_claimed')} {arch_claimed}{arrow}{_l('s_file')} {arch_file}  {_l('s_bad2')}"
     elif arch_file:
-        arch_s = f"文件 {arch_file}（文件名未声明架构）"
+        if en:
+            arch_s = f"file {arch_file} (arch not declared in name)"
+        else:
+            arch_s = f"文件 {arch_file}（文件名未声明架构）"
     elif arch_claimed:
-        arch_s = f"声称 {arch_claimed}（文件无法推断, 未校验）"
+        if en:
+            arch_s = f"{_l('s_claimed')} {arch_claimed} (file cannot infer, {_l('s_unverif')})"
+        else:
+            arch_s = f"{_l('s_claimed')} {arch_claimed}（文件无法推断, {_l('s_unverif')}）"
     else:
-        arch_s = "未知（文件名/文件均无架构线索）"
+        arch_s = _l("unk_arch")
     # --- 参数量核验 ---
     m = re.search(r'(\d+(?:[._]\d+)?)\s*[bB](?![a-z])', fname)
     actual_b = total_elems / 1e9 if total_elems else 0
@@ -367,21 +572,28 @@ def _run_audit(fname, ident, quant_claimed, std_quant, arch_claimed, arch_file, 
         claimed_b = float(m.group(1).replace("_", "."))
         ok = actual_b > 0 and abs(claimed_b - actual_b) / actual_b < 0.15
         if ok:
-            params_s = f"声称 {claimed_b:.1f}B  →  文件 {actual_b:.1f}B  ✓ 一致"
+            params_s = f"{_l('s_claimed')} {claimed_b:.1f}B{arrow}{_l('s_file')} {actual_b:.1f}B  {_l('s_ok')}"
         elif actual_b > 0 and claimed_b > actual_b * 1.3:
-            params_s = (f"声称 {claimed_b:.1f}B  →  文件 {actual_b:.1f}B  ✗ 不符"
-                        f"（⚠ 可能为单塔/裁剪: 文件名标全模型参数, 文件仅含文本塔）")
+            if en:
+                params_s = (f"{_l('s_claimed')} {claimed_b:.1f}B{arrow}{_l('s_file')} {actual_b:.1f}B  {_l('s_bad2')}"
+                            f" (⚠ maybe single-tower/pruned: name claims full-model params, file holds text tower only)")
+            else:
+                params_s = (f"{_l('s_claimed')} {claimed_b:.1f}B{arrow}{_l('s_file')} {actual_b:.1f}B  {_l('s_bad2')}"
+                            f"（⚠ 可能为单塔/裁剪: 文件名标全模型参数, 文件仅含文本塔）")
         else:
-            params_s = f"声称 {claimed_b:.1f}B  →  文件 {actual_b:.1f}B  ✗ 不符"
+            params_s = f"{_l('s_claimed')} {claimed_b:.1f}B{arrow}{_l('s_file')} {actual_b:.1f}B  {_l('s_bad2')}"
     else:
-        params_s = f"文件名未声明  →  文件 {actual_b:.1f}B（补全）"
+        if en:
+            params_s = f"{_l('s_undecl')}{arrow}file {actual_b:.1f}B ({_l('s_fill')})"
+        else:
+            params_s = f"{_l('s_undecl')}{arrow}文件 {actual_b:.1f}B（{_l('s_fill')}）"
     # --- 标准化命名: 身份段保留 + 参数量缺失补 + 量化段替换/补全 ---
     parts = [ident] if ident else []
     if not m and ident and actual_b > 0:
         parts.append(f"{actual_b:.1f}B")
     if std_quant:
         parts.append(std_quant)
-    suggest = "-".join(parts) if parts else "（无法生成建议）"
+    suggest = "-".join(parts) if parts else ("(cannot suggest)" if en else "（无法生成建议）")
     _print_audit(fname, ident, quant_claimed, std_quant, arch_s, params_s, suggest)
 
 
@@ -389,15 +601,83 @@ def print_sec_diag():
     """🔍 开发者深度诊断区标题"""
     print()
     print(SECTION)
-    print(" 🔍 【开发者深度诊断】")
+    print(" " + _l("sec_diag"))
     print(SECTION)
+
+
+def _verdict_en(text):
+    """终审 verdict 证据文案 → 英文 (常用短语替换; 术语/数字保留)"""
+    t = text
+    pairs = (
+        ("含 weight_scale 伴生张量", "weight_scale companion tensors"),
+        ("含 comfy_quant 元数据", "comfy_quant metadata"),
+        ("含 weight_zp (zero-point)", "weight_zp (zero-point)"),
+        ("含 w4a4_group_size", "w4a4_group_size"),
+        ("含 bnb 量化伴生 (absmax+quant_map)", "bnb quant companions (absmax+quant_map)"),
+        ("含 bitsandbytes__nf4 标记", "bitsandbytes__nf4 markers"),
+        ("存在 int8 张量", "int8 tensors present"),
+        ("存在 int32 打包权重 (疑似 torchao)", "int32 packed weights (likely torchao)"),
+        ("存在 bf16 (未量化层)", "bf16 (unquantized) present"),
+        ("无偏", "unbiased"),
+        ("打包", "packed"),
+        ("双解读差异大", "large dual-interpretation gap"),
+        ("真 INT4 级", "true INT4 level"),
+        ("INT8 级", "INT8 level"),
+        ("混合精度", "mixed precision"),
+        ("接近未量化", "near-unquantized"),
+        ("层主导", "layers dominant"),
+        ("层主导, gs 虚标", "layers dominant, gs mislabeled"),
+        ("无 weight_scale", "no weight_scale"),
+        ("可能未量化 或 GGUF 另行处理", "possibly unquantized or handled as GGUF"),
+        ("quarot 旋转", "quarot rotation"),
+        ("待定", "pending"),
+        ("需结合权重宽度判断 (可能真 INT4 或伪 W4A4)",
+         "needs weight-width check (true INT4 or fake W4A4)"),
+        ("个 → ComfyUI 量化协议", "-> ComfyUI protocol"),
+        ("int32 weight + scale", "int32 weight + scale"),
+        ("可能未量化", "possibly unquantized"),
+        ("量化层 + 原生精度层混合", "quantized + native layers"),
+        ("quant_state 标记", "quant_state markers"),
+        ("absmax/quant_map 码本", "absmax/quant_map codebook"),
+        ("决定性物理证据", "decisive physical evidence"),
+        ("量化层", "quantized layers"),
+        ("未量化", "unquantized"),
+        ("部分量化", "partially quantized"),
+        ("采样结构", "sampled structure"),
+        ("comfy_quant 专有元数据 (ComfyUI 官方量化协议, 非 torchao)",
+         "comfy_quant proprietary metadata (ComfyUI official protocol, not torchao)"),
+        ("无量化伴生张量", "no quant companion tensors"),
+        ("int32 打包", "int32 packing"),
+        ("解包验证通过", "unpack verification passed"),
+        ("解包验证", "unpack verification"),
+        ("nibble 缺失", "nibble absence"),
+        ("合法 4bit", "valid 4-bit"),
+        ("字节 unique 组合", "byte unique combination"),
+        ("格式分布", "format distribution"),
+        ("缩放", "scaling"),
+        ("旋转消除离群值", "rotation removes outliers"),
+        ("通道级", "channel-wise"),
+        ("主导格式", "dominant format"),
+        ("主导", "dominant"),
+        ("候选参考", "candidate reference"),
+        ("块级", "block-wise"),
+        ("码本", "codebook"),
+        ("标记", "markers"),
+        ("伴生张量", "companion tensors"),
+        ("张量", "tensors"),
+        ("层", "layers"),
+        ("旋转", "rotation"),
+    )
+    for zh, en in pairs:
+        t = t.replace(zh, en)
+    return t
 
 
 def print_sec_final():
     """终审结论区标题"""
     print()
     print(BANNER)
-    print(" 【终审结论】")
+    print(" " + _l("sec_final"))
     print(BANNER)
 
 # GGML 张量类型枚举 (llama.cpp ggml.h) → 名称
@@ -664,32 +944,51 @@ def analyze_gguf(path):
     print_sec_quick(type_str, load_advice, fsize, ratio)
 
     # 📊 性能与结构评估
+    w_bits = GGML_TYPE_BITS.get(dom_t, 16)
     if fp16_bytes > 0:
-        protocol = f"GGUF v{ver} 分块量化"
-        algo = f"块级 scale 内嵌 (256 元素超块, {dom_name} 主导)"
-        mechanism = f"分块量化：{dom_name} 块级缩放（块内共享 scale/dmin）"
-        print_sec_perf(fp16_bytes / 1024 ** 3, ratio, protocol, algo, "GGUF 分块量化", mechanism)
+        if LANG == "en":
+            protocol = f"GGUF v{ver} block-quantized"
+            algo = f"block-wise scale embedded (256-elem superblock, {dom_name} dominant)"
+            mechanism = f"block quantization: {dom_name} block-wise scaling (block-shared scale/dmin)"
+            save_note = "GGUF block-quantized"
+            w_text = f"{round(w_bits)} bit ({dom_name} dominant)"
+            a_text = "A16 primary (llama.cpp default), A8 optional"
+        else:
+            protocol = f"GGUF v{ver} 分块量化"
+            algo = f"块级 scale 内嵌 (256 元素超块, {dom_name} 主导)"
+            mechanism = f"分块量化：{dom_name} 块级缩放（块内共享 scale/dmin）"
+            save_note = "GGUF 分块量化"
+            w_text = f"{round(w_bits)} bit（{dom_name} 主导）"
+            a_text = "A16 为主（llama.cpp 默认）, A8 可选"
+        print_sec_perf(fp16_bytes / 1024 ** 3, ratio, protocol, algo, save_note, mechanism)
         meta_a = f"architecture={arch}"
         if meta.get('general.file_type') is not None:
             meta_a += f", file_type={meta['general.file_type']}"
-        w_bits = GGML_TYPE_BITS.get(dom_t, 16)
-        _print_activation_block(meta_a, os.path.splitext(path)[1],
-                                f"{round(w_bits)} bit（{dom_name} 主导）",
-                                "A16 为主（llama.cpp 默认）, A8 可选")
+        _print_activation_block(meta_a, os.path.splitext(path)[1], w_text, a_text)
 
     print_sec_diag()
-    print(" [GGUF 容器与张量类型]")
-    print(f"  • 文件签名: GGUF | 版本 v{ver} | 张量 {n_tensor} 个 | KV 元数据 {n_kv} 项")
     meta_parts = [f"architecture={arch}"]
     for k in ("general.name", "general.file_type", "general.quantization_version"):
         if k in meta:
             meta_parts.append(f"{k.split('.')[-1]}={meta[k]}")
-    print(f"  • 元数据: " + " | ".join(meta_parts))
-    print(f"  • 类型分布 (按权重元素占比):")
-    for name, c, ne, se, bits in dist_lines:
-        print(f"      {name:<10}: {c} 张量  ({ne} 元素, {se:.1f}% 权重, ~{bits:.1f} bit/元素)")
-    if ratio is not None:
-        print(f"  • 压缩比估算: ~{ratio:.0f}% ({est_bytes/1024**3:.2f} GB vs 全 fp16 ~{fp16_bytes/1024**3:.2f} GB)")
+    if LANG == "en":
+        print(" [GGUF Container & Tensor Types]")
+        print(f"  • signature: GGUF | version v{ver} | tensors {n_tensor} | KV metadata {n_kv}")
+        print(f"  • metadata: " + " | ".join(meta_parts))
+        print(f"  • type distribution (by weight elements):")
+        for name, c, ne, se, bits in dist_lines:
+            print(f"      {name:<10}: {c} tensors  ({ne} elems, {se:.1f}% weight, ~{bits:.1f} bit/elem)")
+        if ratio is not None:
+            print(f"  • est. ratio: ~{ratio:.0f}% ({est_bytes/1024**3:.2f} GB vs full fp16 ~{fp16_bytes/1024**3:.2f} GB)")
+    else:
+        print(" [GGUF 容器与张量类型]")
+        print(f"  • 文件签名: GGUF | 版本 v{ver} | 张量 {n_tensor} 个 | KV 元数据 {n_kv} 项")
+        print(f"  • 元数据: " + " | ".join(meta_parts))
+        print(f"  • 类型分布 (按权重元素占比):")
+        for name, c, ne, se, bits in dist_lines:
+            print(f"      {name:<10}: {c} 张量  ({ne} 元素, {se:.1f}% 权重, ~{bits:.1f} bit/元素)")
+        if ratio is not None:
+            print(f"  • 压缩比估算: ~{ratio:.0f}% ({est_bytes/1024**3:.2f} GB vs 全 fp16 ~{fp16_bytes/1024**3:.2f} GB)")
 
     # 📋 文件名审计 (GGUF 架构精确, 可完整核验)
     ident_g, quant_claim_g = _strip_quant_from_name(os.path.splitext(os.path.basename(path))[0])
@@ -698,14 +997,23 @@ def analyze_gguf(path):
                _arch_from_name(path), arch, total_elems)
 
     print_sec_final()
-    print(f"  → 类型识别: {type_str}")
-    print(f"  → 识别依据: GGUF 文件签名 + 分块量化类型分布, {dom_name} 占 {share:.0f}% 权重元素 ({type_count.get(dom_t, 0)} 张量)")
+    print(f"  → {_l('f_type_id')}: {_type_en(type_str) if LANG == 'en' else type_str}")
+    if LANG == "en":
+        print(f"  → {_l('f_basis')}: GGUF signature + block-quant type distribution, {dom_name} {share:.0f}% weight elems ({type_count.get(dom_t, 0)} tensors)")
+    else:
+        print(f"  → {_l('f_basis')}: GGUF 文件签名 + 分块量化类型分布, {dom_name} 占 {share:.0f}% 权重元素 ({type_count.get(dom_t, 0)} 张量)")
     if len(type_count) > 1:
         others = ", ".join(f"{GGML_TYPE_NAMES.get(t, t)}×{c}" for t, c in type_count.most_common(6)[1:])
-        print(f"  → 混合构成: {others}")
-    print(f"  → 典型加载: {load_advice}")
+        if LANG == "en":
+            print(f"  → Mixed composition: {others}")
+        else:
+            print(f"  → 混合构成: {others}")
+    print(f"  → {_l('f_load_advice')}: {load_advice}")
     if ratio is not None:
-        print(f"  → 结构要点: 估算压缩比 ~{ratio:.0f}%, {total_t} 个张量, 块级 scale 内嵌数据块")
+        if LANG == "en":
+            print(f"  → {_l('f_struct_pt')}: est. ratio ~{ratio:.0f}%, {total_t} tensors, block-wise scale embedded")
+        else:
+            print(f"  → {_l('f_struct_pt')}: 估算压缩比 ~{ratio:.0f}%, {total_t} 个张量, 块级 scale 内嵌数据块")
     print(BANNER)
     return {
         "path": path, "size_gb": fsize, "ratio": ratio,
@@ -967,25 +1275,34 @@ def analyze_file(path):
         _print_activation_block(meta_a, os.path.splitext(path)[1], w_a, a_a)
 
     print_sec_diag()
-    print(" [张量与数据类型分布]")
+    print(" " + _l("sub_tensor"))
     print(f"  • 总 Key 数: {n_keys}")
     print(f"  • Key 后缀: " + " | ".join(f".{s}: {c}" for s, c in suffix.most_common(8)))
     print(f"  • dtype: " + " | ".join(f"{d}: {c}" for d, c in dt.most_common()))
     if scalar_meta:
-        print(f"  • 标量元数据 {dict(scalar_meta)} 已排除 (如 w4a4_group_size)")
+        if LANG == "en":
+            print(f"  • scalar metadata {dict(scalar_meta)} excluded (e.g. w4a4_group_size)")
+        else:
+            print(f"  • 标量元数据 {dict(scalar_meta)} 已排除 (如 w4a4_group_size)")
     print()
 
-    print(" [压缩比评估 (双解读分析)]")
+    print(" " + _l("sub_ratio"))
     if ratio is not None:
         print(f"  • 实际数据: {total_gb:.2f} GB | 全 FP16 基准: ~{fp16_gb:.2f} GB")
         if ratio_packed is not None and abs(ratio_packed - ratio) > 5:
-            print(f"  • 双解读: {ratio:.0f}% (无偏/全宽)  vs  {ratio_packed:.0f}% (若4bit打包)  [差异 {abs(ratio_packed - ratio):.0f}pt]")
+            if LANG == "en":
+                print(f"  • dual: {ratio:.0f}% (unbiased/full)  vs  {ratio_packed:.0f}% (if 4bit packed)  [gap {abs(ratio_packed - ratio):.0f}pt]")
+            else:
+                print(f"  • 双解读: {ratio:.0f}% (无偏/全宽)  vs  {ratio_packed:.0f}% (若4bit打包)  [差异 {abs(ratio_packed - ratio):.0f}pt]")
         else:
             print(f"  • 压缩率: {ratio:.0f}%")
-        print(f"  • 裁决: {res['final_ratio']:.0f}% (按最终类型 {type_str} 选取)")
+        if LANG == "en":
+            print(f"  • verdict: {res['final_ratio']:.0f}% (by final type {_type_en(type_str)})")
+        else:
+            print(f"  • 裁决: {res['final_ratio']:.0f}% (按最终类型 {type_str} 选取)")
     print()
 
-    print(" [量化层与采样验证]")
+    print(" " + _l("sub_sample"))
     if layer_types:
         print(f"  • 格式分布: " + " | ".join(f"{l}: {c} 层" for l, c in layer_types.most_common()))
         if unpack_sample is not None:
@@ -995,7 +1312,10 @@ def analyze_file(path):
             print(f"  • 示例: {first_key}")
             print(f"      └─ {first_detail}")
     else:
-        print("  • 无 .weight_scale / .weight.absmax 伴生张量")
+        if LANG == "en":
+            print("  • no .weight_scale / .weight.absmax companion tensors")
+        else:
+            print("  • 无 .weight_scale / .weight.absmax 伴生张量")
         if first_detail:
             print(f"  • 示例 weight: {first_detail}")
     if comfy_quant_info:
@@ -1012,20 +1332,31 @@ def analyze_file(path):
 
     print_sec_final()
     for dim, v, e in verdicts:
-        line = f"  [{dim}] {v}"
-        if e:
-            line += f"  ({e})"
+        if LANG == "en":
+            dim_en = {"key": "key", "dtype": "dtype", "压缩": "ratio",
+                      "结构": "structure", "元数据": "metadata"}.get(dim, dim)
+            line = f"  [{dim_en}] {_verdict_en(v)}"
+            if e:
+                line += f"  ({_verdict_en(e)})"
+        else:
+            line = f"  [{dim}] {v}"
+            if e:
+                line += f"  ({e})"
         print(line)
     print(SECTION)
-    print(f"  → 类型识别: {type_str}")
+    print(f"  → {_l('f_type_id')}: {_type_en(type_str) if LANG == 'en' else type_str}")
     for ev in res["evidence"]:
-        print(f"  → 识别依据: {ev}")
+        print(f"  → {_l('f_basis')}: {_verdict_en(ev) if LANG == 'en' else ev}")
     if res["load"]:
-        print(f"  → 典型加载: {res['load']}")
+        print(f"  → {_l('f_load_advice')}: {_load_en(res['load']) if LANG == 'en' else res['load']}")
     if res["extra"]:
-        print(f"  → 结构要点: " + "; ".join(res["extra"]))
+        extra_t = [_verdict_en(x) if LANG == "en" else x for x in res["extra"]]
+        print(f"  → {_l('f_struct_pt')}: " + "; ".join(extra_t))
     if res["conflicts"]:
-        print("  ⚠ 证据冲突:")
+        if LANG == "en":
+            print("  ⚠ Evidence conflicts:")
+        else:
+            print("  ⚠ 证据冲突:")
         for c in res["conflicts"]:
             print(f"      - {c}")
     print(BANNER)
@@ -1247,7 +1578,18 @@ def main(args):
         print(__doc__)
         sys.exit(1)
 
-    targets = args[1:]
+    # 过滤 --lang 开关参数
+    raw = args[1:]
+    targets = []
+    skip_next = False
+    for a in raw:
+        if a == "--lang":
+            skip_next = True
+            continue
+        if skip_next:
+            skip_next = False
+            continue
+        targets.append(a)
     files = []
     for t in targets:
         if os.path.isdir(t):
@@ -1259,7 +1601,7 @@ def main(args):
             files.append(t)
 
     if not files:
-        print("[ERROR] 未找到 .safetensors / .gguf 文件")
+        print("[ERROR] " + _l("no_files"))
         sys.exit(1)
 
     results = []
@@ -1271,8 +1613,12 @@ def main(args):
     # 汇总表
     if len(results) > 1:
         print("\n" + "=" * 78)
-        print("【批量扫描汇总】")
-        print(f"{'模型':<44} {'大小':>7} {'无偏%':>6} {'打包%':>6}  判定")
+        if LANG == "en":
+            print("Batch Scan Summary")
+            print(f"{'Model':<44} {'Size':>7} {'unbiased%':>9} {'packed%':>8}  Verdict")
+        else:
+            print("【批量扫描汇总】")
+            print(f"{'模型':<44} {'大小':>7} {'无偏%':>6} {'打包%':>6}  判定")
         print("-" * 78)
         for info in results:
             name = os.path.basename(info["path"])[:42]
