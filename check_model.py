@@ -41,7 +41,7 @@ import torch
 import safetensors.torch as st
 from collections import Counter
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 BANNER = "=" * 80
 SECTION = "-" * 80
@@ -107,7 +107,7 @@ def _quant_mechanism(type_str, comfy_quant_info=None):
         return "通道级/tensorwise int8 定点缩放"
     if "comfyui int4" in tl or "tint4" in fl:
         return "int32 打包（每 int32 装 8×4bit）+ 通道级缩放"
-    if "fp8" in fl:
+    if ("fp8" in fl or "float8" in fl):
         return "8-bit 浮点（e4m3/e5m2 指数尾数分配）"
     if "packed int4" in tl:
         return "字节打包：每字节 2×4bit，group-wise 缩放" if "group-wise" in tl else "字节打包：每字节 2×4bit，per-row 缩放"
@@ -122,6 +122,261 @@ def _quant_mechanism(type_str, comfy_quant_info=None):
     if "混合精度" in tl:
         return "部分层量化（量化层 + 原生精度层混合）"
     return ""
+
+
+def _print_activation_block(meta, suffix, w, a):
+    """📊 区内的「激活位宽 (A) 推导」块: 证据链(元数据→后缀→W→A)"""
+    print()
+    print("  [激活位宽 (A) 推导]")
+    print(f"  • 模型元数据: {meta}")
+    print(f"  • 文件后缀:   {suffix}")
+    print(f"  • 权重位宽 W: {w}")
+    print(f"  • 激活位宽 A: {a}   ⚠ 引擎相关, 非文件证据")
+
+
+def _activation_derive_safetensors(sd, type_str, comfy_quant_info):
+    """推导 safetensors 激活位宽参考要素, 返回 (meta, w, a)。
+
+    W 从文件结构推导(非文件名); A 是 W×引擎族的候选参考(非文件证据)。
+    """
+    tl = type_str.lower()
+    # --- 模型元数据 ---
+    if comfy_quant_info:
+        parts = [f"comfy_quant.format={comfy_quant_info.get('format', '?')}"]
+        if comfy_quant_info.get("per_block"):
+            parts.append("per_block")
+        if comfy_quant_info.get("quarot"):
+            parts.append("quarot")
+        if comfy_quant_info.get("group_size"):
+            parts.append(f"gs={comfy_quant_info['group_size']}")
+        meta = ", ".join(parts)
+    elif "bitsandbytes" in tl:
+        n = sum(1 for k in sd if k.endswith(".bitsandbytes__nf4"))
+        meta = f"bitsandbytes__nf4 ({n} 组)"
+    else:
+        meta = "无专有量化元数据"
+    # --- 权重位宽 W (从文件结构推导) ---
+    if "int4" in tl or "packed int4" in tl or "torchao" in tl or "非对称" in tl:
+        w = "4 bit"
+    elif "nf4" in tl:
+        w = "4 bit（uint8 打包 2×4bit）"
+    elif ("fp8" in tl or "float8" in tl):
+        w = "8 bit（FP8 浮点）"
+    elif "int8" in tl or "group-wise" in tl:
+        w = "8 bit（int8 定点）"
+    elif "接近未量化" in tl:
+        w = "16 bit（原生 fp16/bf16）"
+    elif "混合精度" in tl:
+        w = "混合（量化层 + 原生层）"
+    else:
+        w = "待定"
+    # --- 激活位宽 A (W×引擎族候选, 非文件证据) ---
+    has_svdq = any("svdq" in k.lower() or "lora_" in k.lower() for k in sd)
+    if has_svdq and "int4" in tl:
+        a = "A4（设计锁定, 全 4bit 推理）"
+    elif ("fp8" in tl or "float8" in tl):
+        a = "A8-FP8 为主（硬件配套）, A16 可选"
+    elif "int8" in tl or "group-wise" in tl:
+        a = "A8 为主, A16 可选"
+    elif "nf4" in tl:
+        a = "A16 为主, A8 可选"
+    elif "int4" in tl or "torchao" in tl or "非对称" in tl:
+        a = "A16 为主（ComfyUI 默认）, A8 可选" if comfy_quant_info else "A16 为主, A8 可选"
+    elif "接近未量化" in tl:
+        a = "A16（无激活量化）"
+    elif "混合精度" in tl:
+        a = "视量化层而定"
+    else:
+        a = "待定"
+    return meta, w, a
+
+
+# ==================== 文件名审计 ====================
+# 文件名量化声称词表 (剥离/核验用)
+_QUANT_TOKENS = ("fp16", "fp32", "bf16", "f16", "f32", "fp8", "float8",
+                 "e4m3", "e5m2", "int8", "int4", "uint8", "nf4", "fp4",
+                 "q2_k", "q3_k", "q4_0", "q4_1", "q4_k", "q5_0", "q5_1",
+                 "q5_k", "q6_k", "q8_0", "q8_k", "iq2", "iq3", "iq4",
+                 "tint4", "convrot", "awq", "gptq", "mixed", "torchao",
+                 "8bit", "4bit", "16bit")
+
+# 文件名架构词 → 家族 (safetensors 无架构元数据, 家族级推断)
+_ARCH_TOKENS = (("qwen", "Qwen"), ("mistral", "Mistral"), ("llama", "LLaMA"),
+                ("flux", "Flux"), ("sdxl", "SDXL"), ("umt5", "UMT5"),
+                ("minimax", "MiniMax"), ("t5", "T5"), ("clip", "CLIP"),
+                ("vit", "ViT"), ("gemma", "Gemma"), ("deepseek", "DeepSeek"),
+                ("sd", "SD"))
+
+
+def _strip_quant_from_name(stem):
+    """从文件名主干剥离量化声称段, 返回 (身份段, 量化声称段或None)。
+
+    分段逻辑: 先按 '-' 分; 段内先查子段(_ 连接)量化词, 子段拆不出
+    但整段含量化词(如 Q3_K_S)则整段视为量化段。身份段 = 剥离后重组。
+    """
+    parts = stem.split("-")
+    out_parts, quant_parts = [], []
+    for p in parts:
+        subs = p.split("_")
+        matched = [s for s in subs if any(t in s.lower() for t in _QUANT_TOKENS)]
+        if matched:
+            keep = [s for s in subs if s not in matched]
+            if keep:
+                out_parts.append("_".join(keep))
+            quant_parts.append("_".join(matched))
+        elif any(t in p.lower() for t in _QUANT_TOKENS):
+            # 子段拆不出但整段是量化类型 (如 Q3_K_S)
+            quant_parts.append(p)
+        else:
+            out_parts.append(p)
+    ident = "-".join(out_parts).strip("-")
+    return ident, ("-".join(quant_parts) if quant_parts else None)
+
+
+def _standard_quant_tag(type_str, comfy_quant_info=None, dominant_name=None):
+    """type_str → 文件名友好的标准量化段 (供标准化命名替换/补全)"""
+    tl = type_str.lower()
+    if "gguf" in tl:
+        return dominant_name or "GGUF"
+    if "comfyui fp8" in tl or "float8" in tl or ("fp8" in tl and "comfyui" in tl):
+        fmt = (comfy_quant_info or {}).get("format", "")
+        return ("FP8-" + fmt.replace("float8_", "")) if "float8" in fmt else "FP8"
+    if "comfyui int4" in tl or "tint4" in tl:
+        return "ComfyUI-INT4"
+    if "comfyui int8" in tl or ("int8" in tl and "comfyui" in tl):
+        return "ComfyUI-INT8"
+    if "nf4" in tl:
+        return "NF4"
+    if "int4" in tl:
+        if "per-row" in tl:
+            return "INT4-per-row"
+        if "tensorwise" in tl:
+            return "INT4-tensorwise"
+        return "INT4-groupwise" if "group-wise" in tl else "INT4"
+    if "torchao" in tl:
+        return "INT4-torchao"
+    if "接近未量化" in tl:
+        return "fp16"
+    if "混合精度" in tl:
+        return "mixed"
+    return type_str
+
+
+def _arch_from_name(fname):
+    """从文件名提取架构家族词"""
+    stem = os.path.splitext(os.path.basename(fname))[0].lower()
+    for token, family in _ARCH_TOKENS:
+        if token in stem:
+            return family
+    return None
+
+
+def _arch_from_keys(sd):
+    """从 safetensors key 推断架构家族 (家族级)"""
+    keys = " ".join(sd.keys()).lower()
+    if "double_blocks" in keys or "single_blocks" in keys:
+        return "Flux"
+    if "blocks." in keys and "attn" in keys and "mlp" in keys:
+        return "MiniMax"
+    if "model.embed_tokens" in keys or "model.layers" in keys:
+        return "Qwen/Mistral 系"
+    if ("text_model" in keys and "transformer" in keys) or "eos_token_embeddings" in keys:
+        return "CLIP/T5 系"
+    return None
+
+
+def _print_audit(filename, ident, quant_claimed, std_quant, arch_s, params_s, suggest):
+    """📋 文件名审计板块: 原始文件名 → 逐段核验 → 标准化命名"""
+    print()
+    print(SECTION)
+    print(" 📋 【文件名审计】")
+    print(SECTION)
+    print(" [原始文件名]")
+    print(f"  {filename}")
+    print()
+    print(" [逐段核验]")
+    print(f"  • 架构:   {arch_s}")
+    print(f"  • 参数量: {params_s}")
+    if quant_claimed:
+        claimed_l = quant_claimed.lower()
+        ok = any(t in claimed_l for t in (std_quant.lower().replace("-", ""),)) or \
+             any(t in claimed_l for t in _quant_synonyms(std_quant))
+        mark = "✓ 一致" if ok else "✗ 声称不符"
+        print(f"  • 量化/精度: 声称 {quant_claimed}  →  文件 {std_quant}  {mark}")
+    else:
+        print(f"  • 量化/精度: 文件名未声明  →  文件 {std_quant}（补全）")
+    print()
+    print(" [标准化命名]")
+    print(f"  {suggest}")
+    print("  (身份段保留原样, 仅量化段按文件证据更正/补全)")
+
+
+def _quant_synonyms(std_quant):
+    """标准量化段 → 可接受的声称同义词 (宽松匹配)"""
+    s = std_quant.lower().replace("-", "")
+    m = {
+        "comfyuiint4": ("int4", "4bit", "tint4"),
+        "comfyuiint8": ("int8", "8bit"),
+        "int4perrow": ("int4", "4bit"),
+        "int4groupwise": ("int4", "4bit"),
+        "nf4": ("nf4", "4bit"),
+        "int4torchao": ("int4", "4bit", "torchao"),
+    }
+    return m.get(s, (s,))
+
+
+def _arch_family(name):
+    """架构名归一化到家族 (处理别名: t5encoder/umt5→T5, qwen3/qwen→Qwen 等)"""
+    n = (name or "").lower()
+    for alias, fam in (("t5encoder", "T5"), ("umt5", "T5"), ("t5", "T5"),
+                       ("qwen", "Qwen"), ("mistral", "Mistral"), ("llama", "LLaMA"),
+                       ("flux", "Flux"), ("clip", "CLIP"), ("vit", "ViT"),
+                       ("minimax", "MiniMax")):
+        if alias in n:
+            return fam
+    return name or ""
+
+
+def _run_audit(fname, ident, quant_claimed, std_quant, arch_claimed, arch_file, total_elems):
+    """执行文件名审计: 架构/参数量/量化逐段核验 + 生成标准化命名, 渲染📋板块"""
+    import re
+    # --- 架构核验 ---
+    if arch_file and arch_claimed:
+        cf, ff = _arch_family(arch_claimed), _arch_family(arch_file)
+        ok = cf and ff and (cf == ff or cf in ff or ff in cf)
+        if ok:
+            arch_s = f"声称 {arch_claimed}  →  文件 {arch_file}  ✓ 一致"
+        else:
+            arch_s = f"声称 {arch_claimed}  →  文件 {arch_file}  ✗ 不符"
+    elif arch_file:
+        arch_s = f"文件 {arch_file}（文件名未声明架构）"
+    elif arch_claimed:
+        arch_s = f"声称 {arch_claimed}（文件无法推断, 未校验）"
+    else:
+        arch_s = "未知（文件名/文件均无架构线索）"
+    # --- 参数量核验 ---
+    m = re.search(r'(\d+(?:[._]\d+)?)\s*[bB](?![a-z])', fname)
+    actual_b = total_elems / 1e9 if total_elems else 0
+    if m:
+        claimed_b = float(m.group(1).replace("_", "."))
+        ok = actual_b > 0 and abs(claimed_b - actual_b) / actual_b < 0.15
+        if ok:
+            params_s = f"声称 {claimed_b:.1f}B  →  文件 {actual_b:.1f}B  ✓ 一致"
+        elif actual_b > 0 and claimed_b > actual_b * 1.3:
+            params_s = (f"声称 {claimed_b:.1f}B  →  文件 {actual_b:.1f}B  ✗ 不符"
+                        f"（⚠ 可能为单塔/裁剪: 文件名标全模型参数, 文件仅含文本塔）")
+        else:
+            params_s = f"声称 {claimed_b:.1f}B  →  文件 {actual_b:.1f}B  ✗ 不符"
+    else:
+        params_s = f"文件名未声明  →  文件 {actual_b:.1f}B（补全）"
+    # --- 标准化命名: 身份段保留 + 参数量缺失补 + 量化段替换/补全 ---
+    parts = [ident] if ident else []
+    if not m and ident and actual_b > 0:
+        parts.append(f"{actual_b:.1f}B")
+    if std_quant:
+        parts.append(std_quant)
+    suggest = "-".join(parts) if parts else "（无法生成建议）"
+    _print_audit(fname, ident, quant_claimed, std_quant, arch_s, params_s, suggest)
 
 
 def print_sec_diag():
@@ -408,6 +663,13 @@ def analyze_gguf(path):
         algo = f"块级 scale 内嵌 (256 元素超块, {dom_name} 主导)"
         mechanism = f"分块量化：{dom_name} 块级缩放（块内共享 scale/dmin）"
         print_sec_perf(fp16_bytes / 1024 ** 3, ratio, protocol, algo, "GGUF 分块量化", mechanism)
+        meta_a = f"architecture={arch}"
+        if meta.get('general.file_type') is not None:
+            meta_a += f", file_type={meta['general.file_type']}"
+        w_bits = GGML_TYPE_BITS.get(dom_t, 16)
+        _print_activation_block(meta_a, os.path.splitext(path)[1],
+                                f"{round(w_bits)} bit（{dom_name} 主导）",
+                                "A16 为主（llama.cpp 默认）, A8 可选")
 
     print_sec_diag()
     print(" [GGUF 容器与张量类型]")
@@ -422,6 +684,12 @@ def analyze_gguf(path):
         print(f"      {name:<10}: {c} 张量  ({ne} 元素, {se:.1f}% 权重, ~{bits:.1f} bit/元素)")
     if ratio is not None:
         print(f"  • 压缩比估算: ~{ratio:.0f}% ({est_bytes/1024**3:.2f} GB vs 全 fp16 ~{fp16_bytes/1024**3:.2f} GB)")
+
+    # 📋 文件名审计 (GGUF 架构精确, 可完整核验)
+    ident_g, quant_claim_g = _strip_quant_from_name(os.path.splitext(os.path.basename(path))[0])
+    std_quant_g = _standard_quant_tag(type_str, None, dom_name)
+    _run_audit(os.path.basename(path), ident_g, quant_claim_g, std_quant_g,
+               _arch_from_name(path), arch, total_elems)
 
     print_sec_final()
     print(f"  → 类型识别: {type_str}")
@@ -689,6 +957,8 @@ def analyze_file(path):
     if fp16_gb:
         mechanism = _quant_mechanism(type_str, comfy_quant_info)
         print_sec_perf(fp16_gb, res["final_ratio"], protocol, algo, save_note, mechanism)
+        meta_a, w_a, a_a = _activation_derive_safetensors(sd, type_str, comfy_quant_info)
+        _print_activation_block(meta_a, os.path.splitext(path)[1], w_a, a_a)
 
     print_sec_diag()
     print(" [张量与数据类型分布]")
@@ -725,6 +995,14 @@ def analyze_file(path):
     if comfy_quant_info:
         print(f"  • comfy_quant: {json.dumps(comfy_quant_info, ensure_ascii=False)}")
     print()
+
+    # 📋 文件名审计 (safetensors 架构家族级推断)
+    ident_f, quant_claim_f = _strip_quant_from_name(os.path.splitext(os.path.basename(path))[0])
+    std_quant_f = _standard_quant_tag(type_str, comfy_quant_info)
+    # 参数量: 用 fp16 等效基准反推 (与 compute_ratio 同口径, 含 int32 打包 ×8 修正)
+    w_elems = int(fp16_gb * 1024 ** 3 / 2) if fp16_gb else 0
+    _run_audit(os.path.basename(path), ident_f, quant_claim_f, std_quant_f,
+               _arch_from_name(path), _arch_from_keys(sd), w_elems)
 
     print_sec_final()
     for dim, v, e in verdicts:
@@ -810,7 +1088,7 @@ def final_verdict(sd, verdicts, comfy_quant_info, ratio, layer_types, dominant,
         elif "int4" in fl or "tint4" in fl:
             type_str = f"ComfyUI INT4 ({fmt})"
             extra.append("int32 打包 + weight_scale/zp 伴生 (TINT4/ComfyUI 协议)")
-        elif "fp8" in fl:
+        elif ("fp8" in fl or "float8" in fl):
             type_str = f"ComfyUI FP8 ({fmt})"
             extra.append("float8 权重 + scale 伴生")
         elif "nf4" in fl:
@@ -939,7 +1217,7 @@ def final_verdict(sd, verdicts, comfy_quant_info, ratio, layer_types, dominant,
             expected = ["int8", "torchao"]
         elif "int4" in fmt or "tint4" in fmt:
             expected = ["int4", "torchao", "int32"]
-        elif "fp8" in fmt:
+        elif ("fp8" in fmt or "float8" in fmt):
             expected = ["fp8", "torchao"]
         if expected and not any(e in doml for e in expected):
             conflicts.append(f"comfy_quant.format={fmt} 与结构主导 [{dom}] 不一致")

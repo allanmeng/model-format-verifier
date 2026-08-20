@@ -38,6 +38,19 @@
 - **判据**：`bitsandbytes__nf4` quant_state 标记（决定性物理证据）；NF4 码本 16 值非线性（-1.0~1.0）；压缩比打包解读 ×4
 - **暴露的漏洞**：脚本只认 weight_scale 体系 → 不认识 absmax/quant_map 码本体系 → 误判"混合精度"
 
+## 案例 7：qwen_3_4b_fp4_flux2 — 文件名 fp4，实际 FP8（float8 识别漏洞）
+- **表象**：文件名声称 `fp4`（4bit 浮点）；`comfy_quant.format=float8_e4m3fn`（242 个）
+- **真实结论**：ComfyUI FP8 (float8_e4m3fn)——**声称 4bit、实际 8bit，差一倍位宽**
+- **判据**：comfy_quant.format 决定性（float8_e4m3fn → FP8 分支）
+- **暴露的漏洞**：格式判断只认 `fp8` 不认 `float8` → float8_e4m3fn 掉进"ComfyUI 量化"兜底、量化机制/W/A 全"待定" → 5 处判断统一补 `"float8" in` 修复
+- **教训**：格式名变体（fp8/float8_e4m3fn）不能靠子串联想，协议注册表里出现的每个格式名都要覆盖
+
+## 案例 8：Huihui-Qwen3-VL-4B-int8_mixed_convrot — 文件名 int8，实际 INT4 per-row（同族骗局）
+- **表象**：文件名声称 `int8_mixed_convrot`
+- **真实结论**：INT4 per-row 打包（无 group_size）——与案例 2（krea2_turbo-int8_convrot）同款"文件名 int8 实为 INT4"骗局
+- **判据**：解包验证=合法 4bit + 1D per-row scale（无 2D group scale）
+- **教训**：`int8` 出现在文件名里既不表示存储位宽也不表示加载精度，唯一可信的是解包证据
+
 ## GGUF 检测说明（v1.0.0 新增）
 - GGUF 是自包含二进制容器（文件签名 "GGUF"），非 safetensors；`analyze_gguf` 纯 struct 解析，只扫张量信息表不读数据区
 - 分块量化（Q4_K/Q6_K 等）scale 内嵌数据块，不走 nibble/解包判据；主导类型按权重元素占比判定（非张量个数）
