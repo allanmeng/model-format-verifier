@@ -205,7 +205,9 @@ _ARCH_TOKENS = (("qwen", "Qwen"), ("mistral", "Mistral"), ("llama", "LLaMA"),
                 ("flux", "Flux"), ("sdxl", "SDXL"), ("umt5", "UMT5"),
                 ("minimax", "MiniMax"), ("t5", "T5"), ("clip", "CLIP"),
                 ("vit", "ViT"), ("gemma", "Gemma"), ("deepseek", "DeepSeek"),
-                ("sd", "SD"))
+                ("grok", "Grok"), ("phi", "Phi"), ("moonshot", "Moonshot"),
+                ("kimi", "Moonshot"), ("glm", "GLM"), ("internlm", "InternLM"),
+                ("llava", "LLaVA"), ("sd", "SD"))
 
 
 def _strip_quant_from_name(stem):
@@ -276,6 +278,8 @@ def _arch_from_keys(sd):
     keys = " ".join(sd.keys()).lower()
     if "double_blocks" in keys or "single_blocks" in keys:
         return "Flux"
+    if "diffusion_transformer" in keys and "transformer" in keys and "layers" in keys:
+        return "MiniMax"
     if "blocks." in keys and "attn" in keys and "mlp" in keys:
         return "MiniMax"
     if "model.embed_tokens" in keys or "model.layers" in keys:
@@ -331,7 +335,9 @@ def _arch_family(name):
     for alias, fam in (("t5encoder", "T5"), ("umt5", "T5"), ("t5", "T5"),
                        ("qwen", "Qwen"), ("mistral", "Mistral"), ("llama", "LLaMA"),
                        ("flux", "Flux"), ("clip", "CLIP"), ("vit", "ViT"),
-                       ("minimax", "MiniMax")):
+                       ("minimax", "MiniMax"), ("grok", "Grok"), ("phi", "Phi"),
+                       ("moonshot", "Moonshot"), ("glm", "GLM"),
+                       ("internlm", "InternLM"), ("llava", "LLaVA")):
         if alias in n:
             return fam
     return name or ""

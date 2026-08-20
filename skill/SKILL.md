@@ -26,6 +26,13 @@ python scripts/check_model.py <模型.safetensors>        # 单文件
 python scripts/check_model.py <目录>                    # 批量扫描
 ```
 
+**输出呈现约定（2026-08-20 确认）**：运行工具后，回复**顶部先给一句话结论**（类型识别 + 决定性证据 + 加载建议），随后展示**检查工具输出全文**（💡 速览 → 📊 性能与结构评估 → 🔍 开发者深度诊断 → 📋 文件名审计 → 终审结论，全部贴出），不做摘要截断。检查工具输出板块（v1.1.0）：
+- 💡 速览：模型类型 / 典型加载 / 显存参考
+- 📊 性能：原始等效 / 显存节省 / 量化协议 / 关键算法 / 量化机制 / **激活位宽 (A) 推导**（W×引擎族候选，⚠ 非文件证据）
+- 🔍 诊断：张量分布 / 压缩比双解读 / 解包采样
+- 📋 文件名审计：原始文件名 → 逐段核验（架构/参数量/量化精度）→ 标准化命名
+- 终审：证据链 verdicts + 类型/依据/加载/结构要点
+
 ## Core Principles (核心法则)
 
 1. **证据无偏**：不信任元数据/虚标名称（文件名、`w4a4_group_size`、`format` 字段都可能虚标），只以底层物理尺寸与解包特征为基准。
@@ -114,6 +121,8 @@ python scripts/check_model.py <目录>                    # 批量扫描
 | z_image_turbo_int8_convrot | comfy_quant | ComfyUI INT8 (非 torchao) | comfy_quant 归属误判 torchao; 解包判据无区分力 |
 | Flux/Krea2 tint4_torchao | comfy_quant | ComfyUI INT4 | 压缩比 167% 错算 (int32 打包未按 ×8 修正) |
 | z_image_turbo_nf4_v2 | 文件名 nf4 | NF4 (bitsandbytes) | 只认 weight_scale 体系 → 漏判 bnb (absmax/quant_map) |
+| qwen_3_4b_fp4_flux2 | 文件名 fp4 | FP8 (float8_e4m3fn) | float8 格式未识别（只认 fp8）→ 掉兜底/W-A 待定（5 处补全） |
+| Huihui-Qwen3VL-int8_mixed | 文件名 int8 | INT4 per-row 打包 | 同 krea2：文件名 int8 不可信（解包验证戳穿） |
 
 ## 环境与工具
 - 依赖: Python 3.10+, torch, safetensors（详见 references/environment.md）
