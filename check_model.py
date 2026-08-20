@@ -596,7 +596,8 @@ def _run_audit(fname, ident, quant_claimed, std_quant, arch_claimed, arch_file, 
         parts.append(f"{actual_b:.1f}B")
     if std_quant:
         parts.append(std_quant)
-    suggest = "-".join(parts) if parts else ("(cannot suggest)" if en else "（无法生成建议）")
+    ext = os.path.splitext(fname)[1]
+    suggest = "-".join(parts) + ext if parts else ("(cannot suggest)" if en else "（无法生成建议）")
     _print_audit(fname, ident, quant_claimed, std_quant, arch_s, params_s, suggest)
 
 

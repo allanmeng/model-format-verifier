@@ -90,7 +90,7 @@ python check_model.py --lang en <path>        # force English output
   • Quant/Precision: claimed tint4_torchao  →  file ComfyUI-INT4  ✓ match
 
  [Standardized Naming]
-  Flux.2-Klein-9B-Turbo-ComfyUI-INT4
+  Flux.2-Klein-9B-Turbo-ComfyUI-INT4.safetensors
   (identity segments kept as-is; only quant segment corrected/filled by file evidence)
 
 ================================================================================

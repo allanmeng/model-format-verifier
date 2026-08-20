@@ -9,16 +9,22 @@
   - 架构核验：GGUF 精确（general.architecture）/ safetensors key 家族推断 + 架构别名归一化（t5encoder/umt5→T5 等）
   - 参数量核验：文件名 B 数 vs fp16 等效反推（15% 容差；声称 >1.3× 提示"可能为单塔/裁剪"）
   - 量化/精度核验：文件名声称 vs 文件证据（✓ 一致 / ✗ 声称不符），缺失自动补全
-  - 标准化命名：身份段原样保留（含作者前缀）+ 声称不符段替换为验证值 + 缺失段补全
-- 📊 性能区新增**「激活位宽 (A) 推导」块**：模型元数据 → 文件后缀 → 权重位宽 W → 激活位宽 A（候选参考，⚠ 引擎相关非文件证据）
+  - 标准化命名：身份段保留（含作者前缀）+ 声称不符段替换为验证值 + 缺失段补全（含文件后缀）
+- 📊 性能区新增**「激活位宽 (A) 推导」块**：模型元数据 → 文件后缀 → 权重位宽 W → 激活位宽 A（⚠ 引擎相关非文件证据）
+- **i18n 双语输出**：`--lang auto|zh|en`（默认 auto 按系统 locale），术语英文、框架文案本地化
+- README 英文版 + 中文版（README.md / README.zh-CN.md）
 
 ### Fixed
-- `float8_e4m3fn` 等格式未识别：判定只认 `fp8` 不认 `float8` → 类型掉兜底、量化机制/W/A 全"待定"（5 处判断补全）
-- 文件名审计参数量对 int32 打包层（weight_b0/b1）低估 8 倍 → 改用 fp16 等效基准反推（与压缩比同口径）
+- `float8_e4m3fn` 等格式未识别（只认 fp8 不认 float8）→ 类型掉兜底、机制/W/A 全"待定"（5 处判断补全）
+- 审计参数量对 int32 打包层（weight_b0/b1）低估 8 倍 → 改用 fp16 等效基准反推（与压缩比同口径）
+- Windows locale 名（Chinese）在 auto 下误判英文
+- en 模式残留中文清理（save_note/algo/诊断标签/verdict 计数/extra）
+- 标准化命名丢失文件后缀
 
 ### Changed
 - case-studies 新增案例 7（`qwen_3_4b_fp4_flux2`：文件名 fp4、实际 FP8）、案例 8（`Huihui-int8_mixed`：文件名 int8、实际 INT4 per-row）
-- 架构词表新增 MiniMax（文件名 + key 模式 + 别名归一化）
+- 架构词表新增 MiniMax / Grok / Phi / Moonshot / Kimi / GLM / InternLM / LLaVA
+- README 输出示例换 tint4 全五区（核验全 ✓）
 
 ## [1.0.1] - 2026-08-08
 

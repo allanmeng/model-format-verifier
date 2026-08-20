@@ -92,7 +92,7 @@ python check_model.py <模型目录>
   • 量化/精度: 声称 tint4_torchao  →  文件 ComfyUI-INT4  ✓ 一致
 
  [标准化命名]
-  Flux.2-Klein-9B-Turbo-ComfyUI-INT4
+  Flux.2-Klein-9B-Turbo-ComfyUI-INT4.safetensors
   (身份段保留原样, 仅量化段按文件证据更正/补全)
 
 ================================================================================
